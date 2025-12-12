@@ -13,6 +13,10 @@ from prefab_diff_tool.core.unity_model import (
     UnityGameObject,
     UnityProperty,
 )
+from prefab_diff_tool.core.loader import (
+    UnityFileLoader,
+    load_unity_file,
+)
 
 __all__ = [
     "Change",
@@ -26,4 +30,6 @@ __all__ = [
     "UnityDocument",
     "UnityGameObject",
     "UnityProperty",
+    "UnityFileLoader",
+    "load_unity_file",
 ]
