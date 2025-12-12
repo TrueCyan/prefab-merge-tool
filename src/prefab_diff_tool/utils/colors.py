@@ -20,10 +20,15 @@ class DiffColors:
     MODIFIED_BG_DARK = QColor(80, 70, 30)  # Dark yellow
     UNCHANGED_BG_DARK = QColor(0, 0, 0, 0) # Transparent
     
-    # Text/foreground colors
-    ADDED_FG = QColor(21, 87, 36)          # Dark green (#155724)
-    REMOVED_FG = QColor(114, 28, 36)       # Dark red (#721c24)
-    MODIFIED_FG = QColor(133, 100, 4)      # Dark yellow (#856404)
+    # Text/foreground colors (light theme)
+    ADDED_FG_LIGHT = QColor(21, 87, 36)    # Dark green (#155724)
+    REMOVED_FG_LIGHT = QColor(114, 28, 36) # Dark red (#721c24)
+    MODIFIED_FG_LIGHT = QColor(133, 100, 4) # Dark yellow (#856404)
+
+    # Text/foreground colors (dark theme) - brighter for visibility
+    ADDED_FG = QColor(100, 220, 120)        # Bright green
+    REMOVED_FG = QColor(255, 120, 120)      # Bright red
+    MODIFIED_FG = QColor(255, 210, 80)      # Bright yellow
     
     # Accent colors (for icons/badges)
     ADDED_ACCENT = QColor(40, 167, 69)     # Green (#28a745)
