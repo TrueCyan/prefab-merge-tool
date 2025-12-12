@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prefab-diff-tool"
+version = "0.1.0"
+description = "Visual diff and merge tool for Unity prefab files"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "TrueCyan" }
+]
+keywords = ["unity", "prefab", "diff", "merge", "git", "yaml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "PySide6>=6.5.0",
+    "prefab-tool>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-qt>=4.2",
+    "black",
+    "ruff",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+prefab-diff = "prefab_diff_tool.__main__:main"
+
+[project.gui-scripts]
+prefab-diff-gui = "prefab_diff_tool.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/TrueCyan/prefab-diff-tool"
+Repository = "https://github.com/TrueCyan/prefab-diff-tool"
+Issues = "https://github.com/TrueCyan/prefab-diff-tool/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prefab_diff_tool"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
