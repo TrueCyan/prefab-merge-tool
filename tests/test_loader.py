@@ -13,7 +13,7 @@ from prefab_diff_tool.core.unity_model import (
 
 
 class MockEntry:
-    """Mock unityparser entry."""
+    """Mock prefab-tool entry."""
 
     def __init__(self, class_name: str, anchor: str, **kwargs):
         self.__class__.__name__ = class_name
@@ -31,12 +31,12 @@ class TestUnityFileLoader:
         assert loader._raw_doc is None
         assert loader._entries_by_id == {}
 
-    @patch("prefab_diff_tool.core.loader.UnityParserDoc")
+    @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
     def test_load_empty_document(self, mock_doc_class):
         """Test loading a document with no entries."""
         mock_doc = MagicMock()
         mock_doc.entries = []
-        mock_doc_class.load_yaml.return_value = mock_doc
+        mock_doc_class.load.return_value = mock_doc
 
         loader = UnityFileLoader()
         doc = loader.load(Path("/fake/path.prefab"))
@@ -46,7 +46,7 @@ class TestUnityFileLoader:
         assert doc.root_objects == []
         assert doc.object_count == 0
 
-    @patch("prefab_diff_tool.core.loader.UnityParserDoc")
+    @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
     def test_load_single_gameobject(self, mock_doc_class):
         """Test loading a document with a single GameObject."""
         # Create mock entries
@@ -61,7 +61,7 @@ class TestUnityFileLoader:
 
         mock_doc = MagicMock()
         mock_doc.entries = [go_entry]
-        mock_doc_class.load_yaml.return_value = mock_doc
+        mock_doc_class.load.return_value = mock_doc
 
         loader = UnityFileLoader()
         doc = loader.load(Path("/fake/test.prefab"))
@@ -70,7 +70,7 @@ class TestUnityFileLoader:
         assert "12345" in doc.all_objects
         assert doc.all_objects["12345"].name == "TestObject"
 
-    @patch("prefab_diff_tool.core.loader.UnityParserDoc")
+    @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
     def test_load_gameobject_with_component(self, mock_doc_class):
         """Test loading a GameObject with a Transform component."""
         go_entry = MockEntry(
@@ -93,7 +93,7 @@ class TestUnityFileLoader:
 
         mock_doc = MagicMock()
         mock_doc.entries = [go_entry, transform_entry]
-        mock_doc_class.load_yaml.return_value = mock_doc
+        mock_doc_class.load.return_value = mock_doc
 
         loader = UnityFileLoader()
         doc = loader.load(Path("/fake/player.prefab"))
@@ -109,12 +109,12 @@ class TestUnityFileLoader:
 class TestLoadUnityFileFunction:
     """Tests for the convenience function."""
 
-    @patch("prefab_diff_tool.core.loader.UnityParserDoc")
+    @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
     def test_load_unity_file_returns_document(self, mock_doc_class):
         """Test that load_unity_file returns a UnityDocument."""
         mock_doc = MagicMock()
         mock_doc.entries = []
-        mock_doc_class.load_yaml.return_value = mock_doc
+        mock_doc_class.load.return_value = mock_doc
 
         result = load_unity_file(Path("/test.prefab"))
 

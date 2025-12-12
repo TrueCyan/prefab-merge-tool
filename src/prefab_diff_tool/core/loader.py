@@ -1,5 +1,5 @@
 """
-Unity file loader using unityparser.
+Unity file loader using prefab-tool.
 
 Converts Unity YAML files to our internal UnityDocument model.
 """
@@ -7,7 +7,7 @@ Converts Unity YAML files to our internal UnityDocument model.
 from pathlib import Path
 from typing import Any, Optional
 
-from unityparser import UnityDocument as UnityParserDoc
+from prefab_tool import UnityYAMLDocument
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
@@ -24,7 +24,7 @@ class UnityFileLoader:
     SKIP_TYPES = frozenset({"Prefab", "PrefabInstance"})
 
     def __init__(self):
-        self._raw_doc: Optional[UnityParserDoc] = None
+        self._raw_doc: Optional[UnityYAMLDocument] = None
         self._entries_by_id: dict[str, Any] = {}
 
     def load(self, file_path: Path) -> UnityDocument:
@@ -37,7 +37,7 @@ class UnityFileLoader:
         Returns:
             UnityDocument with parsed hierarchy
         """
-        self._raw_doc = UnityParserDoc.load_yaml(str(file_path))
+        self._raw_doc = UnityYAMLDocument.load(str(file_path))
         self._entries_by_id = {}
 
         # Index all entries by their anchor (fileID)
