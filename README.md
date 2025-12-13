@@ -33,13 +33,6 @@ Unity YAML 파일(프리팹, 씬, 에셋)의 변경사항을 Unity 에디터처�
 - Python 3.9 이상
 - [prefab-tool](https://github.com/TrueCyan/prefab-tool) (권장)
 
-### pip로 설치
-
-```bash
-# 두 도구 함께 설치 (권장)
-pip install prefab-tool prefab-diff-tool
-```
-
 ### 소스에서 설치
 
 ```bash
