@@ -27,6 +27,18 @@ class UnityFileLoader:
         self._raw_doc: Optional[UnityYAMLDocument] = None
         self._entries_by_id: dict[str, Any] = {}
 
+    def _get_entry_data(self, entry: Any) -> dict:
+        """Get the data dictionary from a UnityYAMLObject."""
+        if hasattr(entry, "get_content"):
+            return entry.get_content() or {}
+        if hasattr(entry, "data"):
+            # data is like {"GameObject": {...}} - get the inner dict
+            data = entry.data or {}
+            if data and len(data) == 1:
+                return next(iter(data.values()), {})
+            return data
+        return {}
+
     def load(self, file_path: Path) -> UnityDocument:
         """
         Load a Unity YAML file and convert to UnityDocument.
@@ -40,11 +52,11 @@ class UnityFileLoader:
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
         self._entries_by_id = {}
 
-        # Index all entries by their anchor (fileID)
-        for entry in self._raw_doc.entries:
-            anchor = getattr(entry, "anchor", None)
-            if anchor:
-                self._entries_by_id[str(anchor)] = entry
+        # Index all entries by their file_id
+        for entry in self._raw_doc.objects:
+            file_id = getattr(entry, "file_id", None)
+            if file_id:
+                self._entries_by_id[str(file_id)] = entry
 
         # Create document
         doc = UnityDocument(file_path=str(file_path))
@@ -53,19 +65,19 @@ class UnityFileLoader:
         game_objects: dict[str, UnityGameObject] = {}
         components: dict[str, UnityComponent] = {}
 
-        for entry in self._raw_doc.entries:
-            anchor = str(getattr(entry, "anchor", ""))
-            class_name = entry.__class__.__name__
+        for entry in self._raw_doc.objects:
+            file_id = str(getattr(entry, "file_id", ""))
+            class_name = getattr(entry, "class_name", "Unknown")
 
             if class_name == "GameObject":
-                go = self._parse_game_object(entry, anchor)
-                game_objects[anchor] = go
-                doc.all_objects[anchor] = go
+                go = self._parse_game_object(entry, file_id)
+                game_objects[file_id] = go
+                doc.all_objects[file_id] = go
 
             elif class_name not in self.SKIP_TYPES:
-                comp = self._parse_component(entry, anchor, class_name)
-                components[anchor] = comp
-                doc.all_components[anchor] = comp
+                comp = self._parse_component(entry, file_id, class_name)
+                components[file_id] = comp
+                doc.all_components[file_id] = comp
 
         # Build hierarchy relationships
         self._build_hierarchy(game_objects, components)
@@ -80,15 +92,16 @@ class UnityFileLoader:
 
         return doc
 
-    def _parse_game_object(self, entry: Any, anchor: str) -> UnityGameObject:
+    def _parse_game_object(self, entry: Any, file_id: str) -> UnityGameObject:
         """Parse a GameObject entry."""
-        name = getattr(entry, "m_Name", "Unnamed")
-        layer = getattr(entry, "m_Layer", 0)
-        tag = getattr(entry, "m_TagString", "Untagged")
-        is_active = bool(getattr(entry, "m_IsActive", 1))
+        data = self._get_entry_data(entry)
+        name = data.get("m_Name", "Unnamed")
+        layer = data.get("m_Layer", 0)
+        tag = data.get("m_TagString", "Untagged")
+        is_active = bool(data.get("m_IsActive", 1))
 
         return UnityGameObject(
-            file_id=anchor,
+            file_id=file_id,
             name=name,
             layer=layer,
             tag=tag,
@@ -96,49 +109,41 @@ class UnityFileLoader:
         )
 
     def _parse_component(
-        self, entry: Any, anchor: str, class_name: str
+        self, entry: Any, file_id: str, class_name: str
     ) -> UnityComponent:
         """Parse a component entry."""
         comp = UnityComponent(
-            file_id=anchor,
+            file_id=file_id,
             type_name=class_name,
         )
 
+        data = self._get_entry_data(entry)
+
         # Handle MonoBehaviour special case
         if class_name == "MonoBehaviour":
-            script_ref = getattr(entry, "m_Script", None)
+            script_ref = data.get("m_Script")
             if script_ref:
                 comp.script_guid = self._extract_guid(script_ref)
                 # Try to get script name from metadata if available
-                comp.script_name = self._guess_script_name(entry)
+                comp.script_name = self._guess_script_name(data)
 
         # Extract all properties
-        comp.properties = self._extract_properties(entry)
+        comp.properties = self._extract_properties(data)
 
         return comp
 
     def _extract_properties(
-        self, entry: Any, prefix: str = ""
+        self, data: dict, prefix: str = ""
     ) -> list[UnityProperty]:
-        """Recursively extract all properties from an entry."""
+        """Recursively extract all properties from a data dictionary."""
         properties = []
 
-        # Get all attributes that don't start with underscore
-        for attr_name in dir(entry):
-            if attr_name.startswith("_") or attr_name == "anchor":
-                continue
+        if not isinstance(data, dict):
+            return properties
 
-            try:
-                value = getattr(entry, attr_name)
-            except (AttributeError, Exception):
-                continue
-
-            # Skip methods
-            if callable(value):
-                continue
-
-            path = f"{prefix}{attr_name}" if prefix else attr_name
-            prop = self._create_property(attr_name, value, path)
+        for key, value in data.items():
+            path = f"{prefix}{key}" if prefix else key
+            prop = self._create_property(key, value, path)
             if prop:
                 properties.append(prop)
 
@@ -185,11 +190,11 @@ class UnityFileLoader:
             return script_ref.get("guid")
         return None
 
-    def _guess_script_name(self, entry: Any) -> Optional[str]:
-        """Try to guess the script name from entry attributes."""
+    def _guess_script_name(self, data: dict) -> Optional[str]:
+        """Try to guess the script name from entry data."""
         # Some common patterns for script identification
         for attr in ["m_Name", "m_ClassName", "m_ScriptName"]:
-            name = getattr(entry, attr, None)
+            name = data.get(attr)
             if name and isinstance(name, str):
                 return name
         return None
@@ -207,7 +212,8 @@ class UnityFileLoader:
                 continue
 
             # Find the GameObject this component belongs to
-            go_ref = getattr(entry, "m_GameObject", None)
+            data = self._get_entry_data(entry)
+            go_ref = data.get("m_GameObject")
             if go_ref and isinstance(go_ref, dict):
                 go_id = str(go_ref.get("fileID", ""))
                 if go_id in game_objects:
@@ -224,8 +230,10 @@ class UnityFileLoader:
             if not transform_entry:
                 continue
 
+            transform_data = self._get_entry_data(transform_entry)
+
             # Get parent transform
-            father_ref = getattr(transform_entry, "m_Father", None)
+            father_ref = transform_data.get("m_Father")
             if father_ref and isinstance(father_ref, dict):
                 father_id = str(father_ref.get("fileID", ""))
                 if father_id and father_id != "0":
@@ -238,7 +246,7 @@ class UnityFileLoader:
                         parent_go.children.append(go)
 
             # Get children from m_Children list
-            children_refs = getattr(transform_entry, "m_Children", [])
+            children_refs = transform_data.get("m_Children", [])
             if isinstance(children_refs, list):
                 for child_ref in children_refs:
                     if isinstance(child_ref, dict):
