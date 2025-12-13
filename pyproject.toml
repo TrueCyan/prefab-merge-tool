@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prefab-diff-tool"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Visual diff and merge tool for Unity prefab files"
 readme = "README.md"
 license = "MIT"
@@ -50,6 +50,9 @@ prefab-diff-gui = "prefab_diff_tool.__main__:main"
 Homepage = "https://github.com/TrueCyan/prefab-diff-tool"
 Repository = "https://github.com/TrueCyan/prefab-diff-tool"
 Issues = "https://github.com/TrueCyan/prefab-diff-tool/issues"
+
+[tool.hatch.version]
+path = "src/prefab_diff_tool/__init__.py"
 
 [tool.hatch.metadata]
 allow-direct-references = true
