@@ -5,8 +5,8 @@ Main application window.
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QSettings, QUrl, QMimeData
+from PySide6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow,
     QFileDialog,
@@ -61,6 +61,9 @@ class MainWindow(QMainWindow):
         self._current_files: list[Path] = []
         self._output_file: Optional[Path] = None
         
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+
         # Setup UI
         self._setup_menu_bar()
         self._setup_status_bar()
@@ -208,15 +211,77 @@ class MainWindow(QMainWindow):
         
         self._save_settings()
         event.accept()
-    
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Handle drag enter event."""
+        if event.mimeData().hasUrls():
+            # Check if any URL is a supported file
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    path = Path(url.toLocalFile())
+                    if self._is_supported_file(path):
+                        event.acceptProposedAction()
+                        return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Handle drop event."""
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        # Collect valid files
+        files: list[Path] = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                path = Path(url.toLocalFile())
+                if self._is_supported_file(path):
+                    files.append(path)
+
+        if not files:
+            event.ignore()
+            return
+
+        event.acceptProposedAction()
+
+        # Handle based on number of files
+        if len(files) == 1:
+            self.open_file(files[0])
+        elif len(files) == 2:
+            self.open_diff(files[0], files[1])
+        elif len(files) >= 3:
+            # For 3+ files, use first 3 for merge (base, ours, theirs)
+            # Ask user for output file
+            output, _ = QFileDialog.getSaveFileName(
+                self, "출력 파일 선택", str(files[1]), UNITY_FILE_FILTER
+            )
+            if output:
+                self.open_merge(files[0], files[1], files[2], Path(output))
+
+    def _is_supported_file(self, path: Path) -> bool:
+        """Check if the file has a supported Unity extension."""
+        supported_extensions = {".prefab", ".unity", ".asset", ".anim", ".controller", ".mat"}
+        return path.suffix.lower() in supported_extensions
+
     # === Public methods ===
     
     def open_file(self, path: Path) -> None:
-        """Open a single file for viewing."""
+        """Open a single file for viewing - prompts for second file to compare."""
         self._current_files = [path]
         self._status_label.setText(f"파일: {path.name}")
-        # TODO: Implement single file view
-        QMessageBox.information(self, "TODO", f"파일 보기 모드: {path}")
+
+        # Ask for second file to compare with
+        other, _ = QFileDialog.getOpenFileName(
+            self,
+            f"비교할 파일 선택 ({path.name}와 비교)",
+            str(path.parent),
+            UNITY_FILE_FILTER,
+        )
+        if other:
+            self.open_diff(path, Path(other))
+        else:
+            # If user cancels, show the file alone using self-comparison
+            self.open_diff(path, path)
     
     def open_diff(self, left: Path, right: Path) -> None:
         """Open two files for diff comparison."""
