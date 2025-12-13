@@ -33,6 +33,7 @@ from prefab_diff_tool.core.unity_model import (
     ConflictResolution,
 )
 from prefab_diff_tool.core.loader import load_unity_file
+from prefab_diff_tool.core.writer import MergeResultWriter, perform_text_merge
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
 from prefab_diff_tool.utils.colors import DiffColors
 
@@ -492,18 +493,50 @@ class MergeView(QWidget):
         """Handle conflict table row click."""
         self._current_conflict_index = row
 
-    def save_result(self, output: Path) -> None:
-        """Save the merge result."""
-        if not self._ours_doc:
-            return
+    def save_result(self, output: Path) -> bool:
+        """
+        Save the merge result.
 
-        # Apply resolutions to ours document
-        # For now, we just copy ours as the base result
-        # In a full implementation, we'd apply the resolved values
+        Applies resolved conflict values and writes the merged document.
 
-        # TODO: Actually write the merged document
-        print(f"Saving merge result to {output}")
-        self._unsaved_changes = False
+        Args:
+            output: Path to write the merged file
+
+        Returns:
+            True if save was successful
+        """
+        if not self._base_path or not self._ours_path or not self._theirs_path:
+            return False
+
+        try:
+            # Use text-based merge with conflict resolutions
+            success, conflict_count = perform_text_merge(
+                base_path=self._base_path,
+                ours_path=self._ours_path,
+                theirs_path=self._theirs_path,
+                output_path=output,
+                conflicts=self._conflicts,
+                normalize=True,
+            )
+
+            if success or self._all_conflicts_resolved():
+                self._unsaved_changes = False
+                return True
+            else:
+                # Even with unresolved conflicts, write the file
+                # (conflicts will be marked with conflict markers)
+                self._unsaved_changes = False
+                return True
+
+        except Exception as e:
+            print(f"Error saving merge result: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _all_conflicts_resolved(self) -> bool:
+        """Check if all conflicts have been resolved."""
+        return all(c.is_resolved for c in self._conflicts)
 
     def has_unsaved_changes(self) -> bool:
         """Check if there are unsaved changes."""

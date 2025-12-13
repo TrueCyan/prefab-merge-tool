@@ -51,6 +51,9 @@ Homepage = "https://github.com/TrueCyan/prefab-diff-tool"
 Repository = "https://github.com/TrueCyan/prefab-diff-tool"
 Issues = "https://github.com/TrueCyan/prefab-diff-tool/issues"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/prefab_diff_tool"]
 
