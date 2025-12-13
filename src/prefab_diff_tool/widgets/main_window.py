@@ -329,9 +329,21 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.No:
                     return
-            
-            self._merge_view.save_result(self._output_file)
-            self._status_label.setText(f"저장됨: {self._output_file.name}")
+
+            success = self._merge_view.save_result(self._output_file)
+            if success:
+                self._status_label.setText(f"저장됨: {self._output_file.name}")
+                QMessageBox.information(
+                    self,
+                    "저장 완료",
+                    f"병합 결과가 저장되었습니다:\n{self._output_file}",
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "저장 실패",
+                    "병합 결과를 저장하는 중 오류가 발생했습니다.",
+                )
     
     def _on_next_change(self) -> None:
         """Navigate to next change."""

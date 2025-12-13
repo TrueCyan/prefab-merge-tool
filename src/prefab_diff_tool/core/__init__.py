@@ -17,6 +17,11 @@ from prefab_diff_tool.core.loader import (
     UnityFileLoader,
     load_unity_file,
 )
+from prefab_diff_tool.core.writer import (
+    MergeResultWriter,
+    write_merge_result,
+    perform_text_merge,
+)
 
 __all__ = [
     "Change",
@@ -32,4 +37,7 @@ __all__ = [
     "UnityProperty",
     "UnityFileLoader",
     "load_unity_file",
+    "MergeResultWriter",
+    "write_merge_result",
+    "perform_text_merge",
 ]
