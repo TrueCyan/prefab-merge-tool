@@ -10,8 +10,9 @@ from PySide6.QtCore import (
     QModelIndex,
     QAbstractItemModel,
     QPersistentModelIndex,
+    QSize,
 )
-from PySide6.QtGui import QColor, QBrush, QFont
+from PySide6.QtGui import QColor, QBrush, QFont, QIcon, QPixmap, QPainter
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
@@ -19,7 +20,31 @@ from prefab_diff_tool.core.unity_model import (
     UnityComponent,
     DiffStatus,
 )
-from prefab_diff_tool.utils.colors import DiffColors
+from prefab_diff_tool.utils.colors import DiffColors, DIFF_SYMBOLS
+
+
+# Unicode icons for different object types (emoji-based for cross-platform compatibility)
+HIERARCHY_ICONS = {
+    # GameObject types
+    "gameobject": "📦",
+    "gameobject_inactive": "📦",  # Could use dimmed version
+    "prefab": "💠",
+    "prefab_instance": "🔷",
+    # Common component types
+    "Transform": "📐",
+    "RectTransform": "📐",
+    "Camera": "📷",
+    "Light": "💡",
+    "AudioSource": "🔊",
+    "MeshRenderer": "🎨",
+    "SkinnedMeshRenderer": "🎭",
+    "Animator": "🎬",
+    "Rigidbody": "⚙️",
+    "Collider": "📦",
+    "Canvas": "🖼️",
+    "MonoBehaviour": "📜",
+    "default_component": "🔧",
+}
 
 
 class NodeType(IntEnum):
@@ -61,8 +86,38 @@ class TreeNode:
         if isinstance(self.data, UnityGameObject):
             return self.data.name
         if isinstance(self.data, UnityComponent):
+            # Use script name for MonoBehaviour, otherwise type name
             return self.data.script_name or self.data.type_name
         return "Unknown"
+
+    @property
+    def icon(self) -> str:
+        """Get icon for this node."""
+        if self.data is None:
+            return ""
+        if isinstance(self.data, UnityGameObject):
+            if not self.data.is_active:
+                return HIERARCHY_ICONS.get("gameobject_inactive", "📦")
+            return HIERARCHY_ICONS.get("gameobject", "📦")
+        if isinstance(self.data, UnityComponent):
+            type_name = self.data.type_name
+            # Check for specific component types
+            if type_name in HIERARCHY_ICONS:
+                return HIERARCHY_ICONS[type_name]
+            # Check for collider types
+            if "Collider" in type_name:
+                return HIERARCHY_ICONS.get("Collider", "📦")
+            return HIERARCHY_ICONS.get("default_component", "🔧")
+        return ""
+
+    @property
+    def display_text(self) -> str:
+        """Get display text with diff status indicator."""
+        status = self.diff_status
+        prefix = DIFF_SYMBOLS.get(status.value, "")
+        if prefix:
+            return f"{prefix} {self.name}"
+        return self.name
 
     @property
     def file_id(self) -> str:
@@ -209,7 +264,12 @@ class HierarchyTreeModel(QAbstractItemModel):
         node = self._get_node(index)
 
         if role == Qt.ItemDataRole.DisplayRole:
-            return node.name
+            # Include icon in display text for visual clarity
+            icon = node.icon
+            name = node.display_text
+            if icon:
+                return f"{icon} {name}"
+            return name
 
         elif role == Qt.ItemDataRole.ToolTipRole:
             return self._get_tooltip(node)
@@ -217,8 +277,15 @@ class HierarchyTreeModel(QAbstractItemModel):
         elif role == Qt.ItemDataRole.ForegroundRole:
             return self._get_foreground(node)
 
+        elif role == Qt.ItemDataRole.BackgroundRole:
+            return self._get_background(node)
+
         elif role == Qt.ItemDataRole.FontRole:
             return self._get_font(node)
+
+        elif role == Qt.ItemDataRole.SizeHintRole:
+            # Provide consistent row height
+            return QSize(-1, 24)
 
         elif role == Qt.ItemDataRole.UserRole:
             # Return the actual data object
@@ -301,6 +368,19 @@ class HierarchyTreeModel(QAbstractItemModel):
         # Default color for components (slightly dimmer)
         if node.node_type == NodeType.COMPONENT:
             return QBrush(QColor(180, 180, 180))
+
+        return None
+
+    def _get_background(self, node: TreeNode) -> Optional[QBrush]:
+        """Get background color based on diff status."""
+        status = node.diff_status
+
+        if status == DiffStatus.ADDED:
+            return QBrush(QColor(DiffColors.ADDED_BG_DARK))
+        elif status == DiffStatus.REMOVED:
+            return QBrush(QColor(DiffColors.REMOVED_BG_DARK))
+        elif status == DiffStatus.MODIFIED:
+            return QBrush(QColor(DiffColors.MODIFIED_BG_DARK))
 
         return None
 

@@ -14,10 +14,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QLabel,
     QTreeView,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
 )
 from PySide6.QtGui import QColor, QBrush
 
@@ -33,6 +29,7 @@ from prefab_diff_tool.core.unity_model import (
 from prefab_diff_tool.core.loader import load_unity_file
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel, NodeType
 from prefab_diff_tool.utils.colors import DiffColors
+from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 
 
 @dataclass
@@ -136,26 +133,17 @@ class DiffView(QWidget):
         hierarchy_layout.addWidget(tree_splitter)
         splitter.addWidget(hierarchy_container)
 
-        # Right side: Inspector panel with property comparison
+        # Right side: Unity-style Inspector panel
         inspector_container = QWidget()
         inspector_layout = QVBoxLayout(inspector_container)
         inspector_layout.setContentsMargins(4, 4, 4, 4)
 
-        inspector_label = QLabel("속성 비교")
+        inspector_label = QLabel("Inspector")
         inspector_label.setStyleSheet("font-weight: bold;")
         inspector_layout.addWidget(inspector_label)
 
-        self._inspector_table = QTableWidget()
-        self._inspector_table.setColumnCount(3)
-        self._inspector_table.setHorizontalHeaderLabels(["속성", "왼쪽", "오른쪽"])
-        self._inspector_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._inspector_table.setAlternatingRowColors(True)
-        self._inspector_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        inspector_layout.addWidget(self._inspector_table)
+        self._inspector = InspectorWidget()
+        inspector_layout.addWidget(self._inspector)
 
         splitter.addWidget(inspector_container)
 
@@ -299,7 +287,7 @@ class DiffView(QWidget):
         """Handle left tree selection."""
         data = index.data(Qt.ItemDataRole.UserRole)
         if data:
-            self._show_properties(data, "left")
+            self._show_inspector(data, "left")
 
             # Try to find and select corresponding item in right tree
             if isinstance(data, (UnityGameObject, UnityComponent)):
@@ -312,7 +300,7 @@ class DiffView(QWidget):
         """Handle right tree selection."""
         data = index.data(Qt.ItemDataRole.UserRole)
         if data:
-            self._show_properties(data, "right")
+            self._show_inspector(data, "right")
 
             # Try to find and select corresponding item in left tree
             if isinstance(data, (UnityGameObject, UnityComponent)):
@@ -321,118 +309,31 @@ class DiffView(QWidget):
                     self._left_tree.setCurrentIndex(left_index)
                     self._left_tree.scrollTo(left_index)
 
-    def _show_properties(
+    def _show_inspector(
         self,
         item: UnityGameObject | UnityComponent,
         side: str,
     ) -> None:
-        """Show properties of the selected item in the inspector."""
-        self._inspector_table.setRowCount(0)
-
+        """Show properties of the selected item in the Unity-style inspector."""
         if isinstance(item, UnityGameObject):
-            # Show GameObject info
-            self._add_property_row("Name", item.name, "")
-            self._add_property_row("FileID", item.file_id, "")
-            self._add_property_row("Layer", str(item.layer), "")
-            self._add_property_row("Tag", item.tag, "")
-            self._add_property_row("Active", str(item.is_active), "")
+            # Find corresponding object in other document
+            other_obj = None
+            if side == "left" and self._right_doc:
+                other_obj = self._right_doc.get_object(item.file_id)
+            elif side == "right" and self._left_doc:
+                other_obj = self._left_doc.get_object(item.file_id)
 
-            # Show components
-            for comp in item.components:
-                self._add_separator_row(comp.script_name or comp.type_name)
-                self._show_component_properties(comp, side)
+            self._inspector.set_game_object(item, other_obj)
 
         elif isinstance(item, UnityComponent):
-            self._show_component_properties(item, side)
+            # Find corresponding component in other document
+            other_comp = None
+            if side == "left" and self._right_doc:
+                other_comp = self._right_doc.get_component(item.file_id)
+            elif side == "right" and self._left_doc:
+                other_comp = self._left_doc.get_component(item.file_id)
 
-    def _show_component_properties(
-        self,
-        comp: UnityComponent,
-        side: str,
-    ) -> None:
-        """Show component properties with diff highlighting."""
-        # Find corresponding component in other document
-        other_comp = None
-        if side == "left" and self._right_doc:
-            other_comp = self._right_doc.get_component(comp.file_id)
-        elif side == "right" and self._left_doc:
-            other_comp = self._left_doc.get_component(comp.file_id)
-
-        other_props = {}
-        if other_comp:
-            other_props = {p.path: p for p in other_comp.properties}
-
-        for prop in comp.properties:
-            left_val = ""
-            right_val = ""
-            is_changed = False
-
-            if side == "left":
-                left_val = self._format_value(prop.value)
-                other_prop = other_props.get(prop.path)
-                if other_prop:
-                    right_val = self._format_value(other_prop.value)
-                    is_changed = prop.value != other_prop.value
-            else:
-                right_val = self._format_value(prop.value)
-                other_prop = other_props.get(prop.path)
-                if other_prop:
-                    left_val = self._format_value(other_prop.value)
-                    is_changed = prop.value != other_prop.value
-
-            self._add_property_row(prop.name, left_val, right_val, is_changed)
-
-    def _format_value(self, value) -> str:
-        """Format a value for display."""
-        if value is None:
-            return "<null>"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (list, dict)):
-            import json
-            try:
-                return json.dumps(value, ensure_ascii=False, indent=None)[:100]
-            except Exception:
-                return str(value)[:100]
-        return str(value)[:100]
-
-    def _add_property_row(
-        self,
-        name: str,
-        left_val: str,
-        right_val: str,
-        is_changed: bool = False,
-    ) -> None:
-        """Add a row to the properties table."""
-        row = self._inspector_table.rowCount()
-        self._inspector_table.insertRow(row)
-
-        name_item = QTableWidgetItem(name)
-        left_item = QTableWidgetItem(left_val)
-        right_item = QTableWidgetItem(right_val)
-
-        if is_changed:
-            bg_color = QColor(DiffColors.MODIFIED_BG_DARK)
-            for item in [name_item, left_item, right_item]:
-                item.setBackground(QBrush(bg_color))
-
-        self._inspector_table.setItem(row, 0, name_item)
-        self._inspector_table.setItem(row, 1, left_item)
-        self._inspector_table.setItem(row, 2, right_item)
-
-    def _add_separator_row(self, label: str) -> None:
-        """Add a separator/header row."""
-        row = self._inspector_table.rowCount()
-        self._inspector_table.insertRow(row)
-
-        item = QTableWidgetItem(f"=== {label} ===")
-        item.setBackground(QBrush(QColor(60, 60, 60)))
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-
-        self._inspector_table.setItem(row, 0, item)
-        self._inspector_table.setSpan(row, 0, 1, 3)
+            self._inspector.set_component(item, other_comp)
 
     def get_summary(self) -> DiffViewSummary:
         """Get summary for status bar."""
