@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "PySide6>=6.5.0",
-    "prefab-tool @ git+https://github.com/TrueCyan/prefab-tool.git",
+    "unityflow @ git+https://github.com/TrueCyan/unityflow.git",
 ]
 
 [project.optional-dependencies]

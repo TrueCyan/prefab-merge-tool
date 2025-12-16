@@ -3,7 +3,7 @@
 # Git difftool/mergetool 설정 스크립트
 #
 # 역할 분리:
-# - prefab-tool: CLI 자동 병합, Git merge driver
+# - unityflow: CLI 자동 병합, Git merge driver
 # - prefab-diff-tool: GUI difftool/mergetool
 
 set -e
@@ -11,15 +11,15 @@ set -e
 echo "=== prefab-diff-tool Git 통합 설정 ==="
 echo
 echo "이 스크립트는 두 도구를 함께 설정합니다:"
-echo "  • prefab-tool    - CLI 자동 병합 (merge driver)"
+echo "  • unityflow      - CLI 자동 병합 (merge driver)"
 echo "  • prefab-diff    - GUI 시각적 diff/merge (difftool/mergetool)"
 echo
 
 # Check if tools are installed
-if ! command -v prefab-tool &> /dev/null; then
-    echo "오류: prefab-tool이 설치되어 있지 않습니다."
+if ! command -v unityflow &> /dev/null; then
+    echo "오류: unityflow가 설치되어 있지 않습니다."
     echo "먼저 다음 명령으로 설치하세요:"
-    echo "  pip install prefab-tool"
+    echo "  pip install unityflow"
     exit 1
 fi
 
@@ -41,10 +41,10 @@ else
 fi
 echo
 
-# === 1. prefab-tool merge driver 설정 ===
-echo "1. Git merge driver 설정 (prefab-tool)..."
+# === 1. unityflow merge driver 설정 ===
+echo "1. Git merge driver 설정 (unityflow)..."
 git config $GLOBAL merge.unity.name "Unity YAML Merge Driver"
-git config $GLOBAL merge.unity.driver 'prefab-tool merge %O %A %B -o %A --path %P'
+git config $GLOBAL merge.unity.driver 'unityflow merge %O %A %B -o %A --path %P'
 echo "   ✓ merge.unity driver 설정 완료"
 
 # === 2. prefab-diff difftool 설정 ===
@@ -66,7 +66,7 @@ echo
 echo "Unity 프로젝트 루트의 .gitattributes에 다음을 추가하세요:"
 echo
 cat << 'GITATTR'
-# Unity 파일 자동 병합 (prefab-tool)
+# Unity 파일 자동 병합 (unityflow)
 *.prefab merge=unity
 *.unity merge=unity
 *.asset merge=unity
@@ -89,7 +89,7 @@ echo
 echo "=== 설정 완료 ==="
 echo
 echo "작동 방식:"
-echo "  1. git merge 시 충돌 발생 → prefab-tool이 자동 병합 시도"
+echo "  1. git merge 시 충돌 발생 → unityflow가 자동 병합 시도"
 echo "  2. 자동 병합 실패 시 → git mergetool로 GUI 해결"
 echo
 echo "사용 방법:"

@@ -13,7 +13,7 @@ from prefab_diff_tool.core.unity_model import (
 
 
 class MockEntry:
-    """Mock prefab-tool entry."""
+    """Mock unityflow entry."""
 
     def __init__(self, class_name: str, anchor: str, **kwargs):
         self.__class__.__name__ = class_name

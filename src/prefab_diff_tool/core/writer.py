@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any, Optional
 import re
 
-from prefab_tool import UnityYAMLDocument
-from prefab_tool.merge import three_way_merge
-from prefab_tool.normalizer import UnityPrefabNormalizer
+from unityflow import UnityYAMLDocument
+from unityflow.merge import three_way_merge
+from unityflow.normalizer import UnityPrefabNormalizer
 
 from prefab_diff_tool.core.unity_model import (
     MergeConflict,
@@ -24,7 +24,7 @@ class MergeResultWriter:
     Writes merge results to Unity YAML files.
 
     Strategies:
-    1. Text-based merge: Use prefab_tool's three_way_merge for line-level merging
+    1. Text-based merge: Use unityflow's three_way_merge for line-level merging
     2. Object-based merge: Apply resolved values to individual properties
     """
 
@@ -38,9 +38,6 @@ class MergeResultWriter:
         self._normalize = normalize
         if normalize:
             self._normalizer = UnityPrefabNormalizer(
-                sort_documents=True,
-                sort_modifications=True,
-                normalize_floats=True,
                 float_precision=6,
             )
         else:
@@ -57,7 +54,7 @@ class MergeResultWriter:
         """
         Perform text-based 3-way merge and write result.
 
-        This uses prefab_tool's three_way_merge function which performs
+        This uses unityflow's three_way_merge function which performs
         line-by-line merging with conflict markers.
 
         Args:
