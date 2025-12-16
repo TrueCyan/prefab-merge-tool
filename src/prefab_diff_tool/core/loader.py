@@ -1,5 +1,5 @@
 """
-Unity file loader using prefab-tool.
+Unity file loader using unityflow.
 
 Converts Unity YAML files to our internal UnityDocument model.
 """
@@ -7,7 +7,7 @@ Converts Unity YAML files to our internal UnityDocument model.
 from pathlib import Path
 from typing import Any, Optional
 
-from prefab_tool import UnityYAMLDocument
+from unityflow import UnityYAMLDocument
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,

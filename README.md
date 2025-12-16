@@ -15,15 +15,15 @@ Unity YAML 파일(프리팹, 씬, 에셋)의 변경사항을 Unity 에디터처�
 - 🔀 **3-way Merge UI** - BASE/OURS/THEIRS 동시 비교
 - ⚡ **충돌 해결** - 클릭으로 Ours/Theirs 선택
 
-## prefab-tool과의 관계
+## unityflow와의 관계
 
 | 도구 | 역할 | 유형 |
 |------|------|------|
-| [prefab-tool](https://github.com/TrueCyan/prefab-tool) | 자동 병합, 정규화, Git merge driver | CLI |
+| [unityflow](https://github.com/TrueCyan/unityflow) | 자동 병합, 정규화, Git merge driver | CLI |
 | **prefab-diff-tool** | 시각적 diff/merge, 충돌 해결 | GUI |
 
 **함께 사용하면:**
-1. `git merge` 시 → `prefab-tool`이 자동 병합 시도
+1. `git merge` 시 → `unityflow`가 자동 병합 시도
 2. 자동 병합 실패 시 → `git mergetool`로 **prefab-diff-tool** GUI 해결
 
 ## 설치
@@ -31,7 +31,7 @@ Unity YAML 파일(프리팹, 씬, 에셋)의 변경사항을 Unity 에디터처�
 ### 요구 사항
 
 - Python 3.9 이상
-- [prefab-tool](https://github.com/TrueCyan/prefab-tool) (권장)
+- [unityflow](https://github.com/TrueCyan/unityflow) (권장)
 
 ### 소스에서 설치
 
@@ -68,9 +68,9 @@ prefab-diff --merge base.prefab ours.prefab theirs.prefab -o merged.prefab
 또는 수동 설정:
 
 ```bash
-# 1. prefab-tool merge driver (자동 병합)
+# 1. unityflow merge driver (자동 병합)
 git config merge.unity.name "Unity YAML Merge Driver"
-git config merge.unity.driver 'prefab-tool merge %O %A %B -o %A --path %P'
+git config merge.unity.driver 'unityflow merge %O %A %B -o %A --path %P'
 
 # 2. prefab-diff difftool (GUI diff)
 git config difftool.prefab-diff.cmd 'prefab-diff --diff "$LOCAL" "$REMOTE"'
@@ -144,4 +144,4 @@ MIT License
 
 ## 관련 프로젝트
 
-- [prefab-tool](https://github.com/TrueCyan/prefab-tool) - Unity YAML 파일 정규화 및 병합 CLI
+- [unityflow](https://github.com/TrueCyan/unityflow) - Unity 워크플로우 자동화 도구 (정규화, 병합, Git 통합)
