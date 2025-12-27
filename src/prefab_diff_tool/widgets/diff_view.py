@@ -377,14 +377,40 @@ class DiffView(QWidget):
         if not file_id or file_id == "0":
             return
 
+        # Determine the target file_id to navigate to
+        # If the reference is to a Component, find its owner GameObject
+        target_file_id = file_id
+        is_component_ref = False
+
+        # Check in right document first
+        if self._right_doc:
+            # Check if it's a GameObject
+            if self._right_doc.all_objects.get(file_id):
+                target_file_id = file_id
+            # Check if it's a Component
+            elif self._right_doc.all_components.get(file_id):
+                is_component_ref = True
+                owner = self._right_doc.get_component_owner(file_id)
+                if owner:
+                    target_file_id = owner.file_id
+        # Fallback to left document
+        elif self._left_doc:
+            if self._left_doc.all_objects.get(file_id):
+                target_file_id = file_id
+            elif self._left_doc.all_components.get(file_id):
+                is_component_ref = True
+                owner = self._left_doc.get_component_owner(file_id)
+                if owner:
+                    target_file_id = owner.file_id
+
         # Try to find the object in the right tree first
-        right_index = self._right_model.find_index_by_file_id(file_id)
+        right_index = self._right_model.find_index_by_file_id(target_file_id)
         if right_index.isValid():
             self._right_tree.setCurrentIndex(right_index)
             self._right_tree.scrollTo(right_index)
 
             # Also sync with left tree if available
-            left_index = self._left_model.find_index_by_file_id(file_id)
+            left_index = self._left_model.find_index_by_file_id(target_file_id)
             if left_index.isValid():
                 self._left_tree.setCurrentIndex(left_index)
                 self._left_tree.scrollTo(left_index)
@@ -394,13 +420,16 @@ class DiffView(QWidget):
             if isinstance(data, UnityGameObject):
                 other_obj = None
                 if self._left_doc:
-                    other_obj = self._left_doc.get_object(file_id)
+                    other_obj = self._left_doc.get_object(target_file_id)
                 self._inspector.set_document(self._right_doc)
                 self._inspector.set_game_object(data, other_obj)
+                # If it was a component reference, scroll to that component
+                if is_component_ref:
+                    self._inspector.scroll_to_component(file_id)
             return
 
         # If not found in right, try left tree
-        left_index = self._left_model.find_index_by_file_id(file_id)
+        left_index = self._left_model.find_index_by_file_id(target_file_id)
         if left_index.isValid():
             self._left_tree.setCurrentIndex(left_index)
             self._left_tree.scrollTo(left_index)
@@ -410,9 +439,12 @@ class DiffView(QWidget):
             if isinstance(data, UnityGameObject):
                 other_obj = None
                 if self._right_doc:
-                    other_obj = self._right_doc.get_object(file_id)
+                    other_obj = self._right_doc.get_object(target_file_id)
                 self._inspector.set_document(self._left_doc)
                 self._inspector.set_game_object(data, other_obj)
+                # If it was a component reference, scroll to that component
+                if is_component_ref:
+                    self._inspector.scroll_to_component(file_id)
 
     def _on_external_reference_clicked(self, guid: str) -> None:
         """Handle external reference click - open file explorer to show the asset."""

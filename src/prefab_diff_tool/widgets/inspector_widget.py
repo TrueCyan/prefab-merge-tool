@@ -1275,3 +1275,23 @@ class InspectorWidget(QScrollArea):
         for widget in self._component_widgets:
             if widget._is_expanded:
                 widget._toggle_expand()
+
+    def scroll_to_component(self, component_file_id: str) -> bool:
+        """
+        Scroll to a specific component by its file_id.
+
+        Args:
+            component_file_id: The file_id of the component to scroll to
+
+        Returns:
+            True if the component was found and scrolled to
+        """
+        for widget in self._component_widgets:
+            if widget._component.file_id == component_file_id:
+                # Expand the component if collapsed
+                if not widget._is_expanded:
+                    widget._toggle_expand()
+                # Scroll to make the component visible
+                self.ensureWidgetVisible(widget)
+                return True
+        return False
