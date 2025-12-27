@@ -403,7 +403,25 @@ class MergeView(QWidget):
             return "<none>"
         if isinstance(value, bool):
             return "true" if value else "false"
-        if isinstance(value, (list, dict)):
+        if isinstance(value, dict):
+            # Check if it's a Unity object reference
+            if "fileID" in value:
+                file_id = value.get("fileID", 0)
+                guid = value.get("guid", "")
+                if file_id == 0:
+                    return "None"
+                if guid:
+                    return f"External ({guid[:8]}...)"
+                return f"(ID: {file_id})"
+            # Other dict
+            import json
+            try:
+                return json.dumps(value, ensure_ascii=False)[:50]
+            except Exception:
+                return str(value)[:50]
+        if isinstance(value, list):
+            if len(value) == 0:
+                return "[]"
             import json
             try:
                 return json.dumps(value, ensure_ascii=False)[:50]
