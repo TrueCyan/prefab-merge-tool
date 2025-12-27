@@ -137,6 +137,9 @@ class DiffView(QWidget):
         inspector_layout.addWidget(inspector_label)
 
         self._inspector = InspectorWidget()
+        # Connect reference clicked signals for navigation
+        self._inspector.reference_clicked.connect(self._on_reference_clicked)
+        self._inspector.external_reference_clicked.connect(self._on_external_reference_clicked)
         inspector_layout.addWidget(self._inspector)
 
         splitter.addWidget(inspector_container)
@@ -358,3 +361,51 @@ class DiffView(QWidget):
         """Collapse all tree items."""
         self._left_tree.collapseAll()
         self._right_tree.collapseAll()
+
+    def _on_reference_clicked(self, file_id: str, guid: str) -> None:
+        """Handle internal reference click - navigate to the referenced object."""
+        if not file_id or file_id == "0":
+            return
+
+        # Try to find the object in the right tree first
+        right_index = self._right_model.find_index_by_file_id(file_id)
+        if right_index.isValid():
+            self._right_tree.setCurrentIndex(right_index)
+            self._right_tree.scrollTo(right_index)
+
+            # Also sync with left tree if available
+            left_index = self._left_model.find_index_by_file_id(file_id)
+            if left_index.isValid():
+                self._left_tree.setCurrentIndex(left_index)
+                self._left_tree.scrollTo(left_index)
+
+            # Update inspector with selected object
+            data = right_index.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, UnityGameObject):
+                other_obj = None
+                if self._left_doc:
+                    other_obj = self._left_doc.get_object(file_id)
+                self._inspector.set_document(self._right_doc)
+                self._inspector.set_game_object(data, other_obj)
+            return
+
+        # If not found in right, try left tree
+        left_index = self._left_model.find_index_by_file_id(file_id)
+        if left_index.isValid():
+            self._left_tree.setCurrentIndex(left_index)
+            self._left_tree.scrollTo(left_index)
+
+            # Update inspector
+            data = left_index.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, UnityGameObject):
+                other_obj = None
+                if self._right_doc:
+                    other_obj = self._right_doc.get_object(file_id)
+                self._inspector.set_document(self._left_doc)
+                self._inspector.set_game_object(data, other_obj)
+
+    def _on_external_reference_clicked(self, guid: str) -> None:
+        """Handle external reference click - show info about external asset."""
+        # External assets cannot be navigated to within this document
+        # Could show a status message or tooltip in the future
+        pass

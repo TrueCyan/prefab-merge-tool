@@ -616,6 +616,10 @@ class ComponentWidget(QFrame):
     Supports Normal mode (Unity Inspector style) and Debug mode (all properties).
     """
 
+    # Signals for reference navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid
+
     def __init__(
         self,
         component: UnityComponent,
@@ -819,6 +823,9 @@ class ComponentWidget(QFrame):
                         document=self._document,
                         guid_resolver=self._guid_resolver,
                     )
+                    # Forward reference signals to ComponentWidget
+                    row.reference_clicked.connect(self.reference_clicked)
+                    row.external_reference_clicked.connect(self.external_reference_clicked)
                     self._properties_layout.addWidget(row)
                     self._property_widgets.append(row)
 
@@ -1227,6 +1234,9 @@ class InspectorWidget(QScrollArea):
                 document=self._document,
                 guid_resolver=self._guid_resolver,
             )
+            # Forward reference signals to InspectorWidget
+            widget.reference_clicked.connect(self.reference_clicked)
+            widget.external_reference_clicked.connect(self.external_reference_clicked)
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
