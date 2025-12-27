@@ -10,25 +10,21 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QSplitter,
     QLabel,
     QTreeView,
 )
-from PySide6.QtGui import QColor, QBrush
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
     UnityGameObject,
-    UnityComponent,
     DiffStatus,
     DiffResult,
     DiffSummary,
     Change,
 )
 from prefab_diff_tool.core.loader import load_unity_file
-from prefab_diff_tool.models.tree_model import HierarchyTreeModel, NodeType
-from prefab_diff_tool.utils.colors import DiffColors
+from prefab_diff_tool.models.tree_model import HierarchyTreeModel
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 
 
@@ -48,15 +44,10 @@ class DiffView(QWidget):
     +------------------+----------------------------+
     |  Hierarchy       |  Inspector                 |
     |  (TreeView)      |  (Property comparison)     |
-    |                  |                            |
-    |  - Added         |  Component 1               |
-    |  - Removed       |  +- prop1: A -> B          |
-    |  - Modified      |  +- prop2: unchanged       |
     +------------------+----------------------------+
     """
 
-    # Signals
-    change_selected = Signal(str)  # Emits path of selected change
+    change_selected = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -69,7 +60,6 @@ class DiffView(QWidget):
         self._changes: list[Change] = []
         self._current_change_index: int = -1
 
-        # Models
         self._left_model = HierarchyTreeModel()
         self._right_model = HierarchyTreeModel()
 
@@ -89,8 +79,9 @@ class DiffView(QWidget):
         hierarchy_layout = QVBoxLayout(hierarchy_container)
         hierarchy_layout.setContentsMargins(4, 4, 4, 4)
 
-        hierarchy_label = QLabel("계층 구조 비교")
-        hierarchy_label.setStyleSheet("font-weight: bold;")
+        hierarchy_label = QLabel("Hierarchy")
+        hierarchy_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        hierarchy_label.setFixedHeight(20)
         hierarchy_layout.addWidget(hierarchy_label)
 
         # Side-by-side tree views
@@ -102,12 +93,13 @@ class DiffView(QWidget):
         left_tree_layout.setContentsMargins(0, 0, 0, 0)
 
         self._left_label = QLabel("왼쪽 (이전)")
-        self._left_label.setStyleSheet("color: #888;")
+        self._left_label.setStyleSheet("color: #888; font-size: 11px;")
         left_tree_layout.addWidget(self._left_label)
 
         self._left_tree = QTreeView()
         self._left_tree.setHeaderHidden(True)
         self._left_tree.setModel(self._left_model)
+        self._left_tree.setIndentation(16)
         self._left_tree.clicked.connect(self._on_left_tree_clicked)
         left_tree_layout.addWidget(self._left_tree)
 
@@ -119,12 +111,13 @@ class DiffView(QWidget):
         right_tree_layout.setContentsMargins(0, 0, 0, 0)
 
         self._right_label = QLabel("오른쪽 (새)")
-        self._right_label.setStyleSheet("color: #888;")
+        self._right_label.setStyleSheet("color: #888; font-size: 11px;")
         right_tree_layout.addWidget(self._right_label)
 
         self._right_tree = QTreeView()
         self._right_tree.setHeaderHidden(True)
         self._right_tree.setModel(self._right_model)
+        self._right_tree.setIndentation(16)
         self._right_tree.clicked.connect(self._on_right_tree_clicked)
         right_tree_layout.addWidget(self._right_tree)
 
@@ -139,7 +132,8 @@ class DiffView(QWidget):
         inspector_layout.setContentsMargins(4, 4, 4, 4)
 
         inspector_label = QLabel("Inspector")
-        inspector_label.setStyleSheet("font-weight: bold;")
+        inspector_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        inspector_label.setFixedHeight(20)
         inspector_layout.addWidget(inspector_label)
 
         self._inspector = InspectorWidget()
@@ -147,31 +141,26 @@ class DiffView(QWidget):
 
         splitter.addWidget(inspector_container)
 
-        # Set initial splitter sizes (50% tree, 50% inspector)
-        splitter.setSizes([500, 500])
+        # Set initial splitter sizes (40% tree, 60% inspector)
+        splitter.setSizes([400, 600])
 
     def load_diff(self, left: Path, right: Path) -> None:
         """Load and compare two files."""
         self._left_path = left
         self._right_path = right
 
-        # Update labels
         self._left_label.setText(f"왼쪽: {left.name}")
         self._right_label.setText(f"오른쪽: {right.name}")
 
         try:
-            # Load both files
             self._left_doc = load_unity_file(left)
             self._right_doc = load_unity_file(right)
 
-            # Perform diff
             self._perform_diff()
 
-            # Update tree models
             self._left_model.set_document(self._left_doc)
             self._right_model.set_document(self._right_doc)
 
-            # Expand trees
             self._left_tree.expandAll()
             self._right_tree.expandAll()
 
@@ -188,7 +177,6 @@ class DiffView(QWidget):
         self._changes = []
         summary = DiffSummary()
 
-        # Build lookup maps
         left_objects = {go.file_id: go for go in self._left_doc.iter_all_objects()}
         right_objects = {go.file_id: go for go in self._right_doc.iter_all_objects()}
 
@@ -236,7 +224,6 @@ class DiffView(QWidget):
             left_go = left_objects[file_id]
             right_go = right_objects[file_id]
 
-            # Compare components
             left_comps = {c.file_id: c for c in left_go.components}
             right_comps = {c.file_id: c for c in right_go.components}
 
@@ -245,7 +232,6 @@ class DiffView(QWidget):
                 left_comp = left_comps[comp_id]
                 right_comp = right_comps[comp_id]
 
-                # Compare properties
                 left_props = {p.path: p for p in left_comp.properties}
                 right_props = {p.path: p for p in right_comp.properties}
 
@@ -284,56 +270,34 @@ class DiffView(QWidget):
         )
 
     def _on_left_tree_clicked(self, index) -> None:
-        """Handle left tree selection."""
+        """Handle left tree selection - show GameObject in inspector."""
         data = index.data(Qt.ItemDataRole.UserRole)
-        if data:
-            self._show_inspector(data, "left")
+        if isinstance(data, UnityGameObject):
+            other_obj = None
+            if self._right_doc:
+                other_obj = self._right_doc.get_object(data.file_id)
+            self._inspector.set_game_object(data, other_obj)
 
-            # Try to find and select corresponding item in right tree
-            if isinstance(data, (UnityGameObject, UnityComponent)):
-                right_index = self._right_model.find_index_by_file_id(data.file_id)
-                if right_index.isValid():
-                    self._right_tree.setCurrentIndex(right_index)
-                    self._right_tree.scrollTo(right_index)
+            # Sync selection with right tree
+            right_index = self._right_model.find_index_by_file_id(data.file_id)
+            if right_index.isValid():
+                self._right_tree.setCurrentIndex(right_index)
+                self._right_tree.scrollTo(right_index)
 
     def _on_right_tree_clicked(self, index) -> None:
-        """Handle right tree selection."""
+        """Handle right tree selection - show GameObject in inspector."""
         data = index.data(Qt.ItemDataRole.UserRole)
-        if data:
-            self._show_inspector(data, "right")
-
-            # Try to find and select corresponding item in left tree
-            if isinstance(data, (UnityGameObject, UnityComponent)):
-                left_index = self._left_model.find_index_by_file_id(data.file_id)
-                if left_index.isValid():
-                    self._left_tree.setCurrentIndex(left_index)
-                    self._left_tree.scrollTo(left_index)
-
-    def _show_inspector(
-        self,
-        item: UnityGameObject | UnityComponent,
-        side: str,
-    ) -> None:
-        """Show properties of the selected item in the Unity-style inspector."""
-        if isinstance(item, UnityGameObject):
-            # Find corresponding object in other document
+        if isinstance(data, UnityGameObject):
             other_obj = None
-            if side == "left" and self._right_doc:
-                other_obj = self._right_doc.get_object(item.file_id)
-            elif side == "right" and self._left_doc:
-                other_obj = self._left_doc.get_object(item.file_id)
+            if self._left_doc:
+                other_obj = self._left_doc.get_object(data.file_id)
+            self._inspector.set_game_object(data, other_obj)
 
-            self._inspector.set_game_object(item, other_obj)
-
-        elif isinstance(item, UnityComponent):
-            # Find corresponding component in other document
-            other_comp = None
-            if side == "left" and self._right_doc:
-                other_comp = self._right_doc.get_component(item.file_id)
-            elif side == "right" and self._left_doc:
-                other_comp = self._left_doc.get_component(item.file_id)
-
-            self._inspector.set_component(item, other_comp)
+            # Sync selection with left tree
+            left_index = self._left_model.find_index_by_file_id(data.file_id)
+            if left_index.isValid():
+                self._left_tree.setCurrentIndex(left_index)
+                self._left_tree.scrollTo(left_index)
 
     def get_summary(self) -> DiffViewSummary:
         """Get summary for status bar."""
@@ -365,7 +329,6 @@ class DiffView(QWidget):
         if 0 <= index < len(self._changes):
             change = self._changes[index]
 
-            # Find and select in tree
             if change.object_id:
                 right_index = self._right_model.find_index_by_file_id(change.object_id)
                 if right_index.isValid():

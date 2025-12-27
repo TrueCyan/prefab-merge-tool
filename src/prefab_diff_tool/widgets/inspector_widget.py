@@ -16,10 +16,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QHBoxLayout,
     QToolButton,
-    QGridLayout,
-    QSizePolicy,
+    QLineEdit,
 )
-from PySide6.QtGui import QColor, QPalette, QFont
 
 from prefab_diff_tool.core.unity_model import (
     UnityGameObject,
@@ -34,8 +32,335 @@ from prefab_diff_tool.utils.naming import (
 )
 
 
+# Properties to skip (internal Unity properties)
+SKIP_PROPERTIES = {
+    "m_ObjectHideFlags",
+    "m_CorrespondingSourceObject",
+    "m_PrefabInstance",
+    "m_PrefabAsset",
+    "serializedVersion",
+    "m_EditorHideFlags",
+    "m_EditorClassIdentifier",
+}
+
+
+def _is_vector_like(value: Any) -> bool:
+    """Check if value looks like a Unity Vector (has x, y, z or x, y components)."""
+    if not isinstance(value, dict):
+        return False
+    keys = set(value.keys())
+    return keys == {"x", "y"} or keys == {"x", "y", "z"} or keys == {"x", "y", "z", "w"}
+
+
+def _is_color_like(value: Any) -> bool:
+    """Check if value looks like a Unity Color (has r, g, b, a components)."""
+    if not isinstance(value, dict):
+        return False
+    keys = set(value.keys())
+    return keys == {"r", "g", "b", "a"}
+
+
+def _is_reference(value: Any) -> bool:
+    """Check if value is a Unity object reference."""
+    if not isinstance(value, dict):
+        return False
+    return "fileID" in value
+
+
+def _format_float(value: float) -> str:
+    """Format a float value for display."""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.4g}"
+
+
+class FieldWidget(QWidget):
+    """A Unity-style field widget with label and value display."""
+
+    def __init__(
+        self,
+        label: str,
+        value: str,
+        is_modified: bool = False,
+        old_value: Optional[str] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._setup_ui(label, value, is_modified, old_value)
+
+    def _setup_ui(
+        self,
+        label: str,
+        value: str,
+        is_modified: bool,
+        old_value: Optional[str],
+    ) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(4)
+
+        # Label
+        label_widget = QLabel(label)
+        label_widget.setFixedWidth(60)
+        label_widget.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+        layout.addWidget(label_widget)
+
+        # Value field (read-only)
+        value_field = QLineEdit(value)
+        value_field.setReadOnly(True)
+        value_field.setFrame(False)
+
+        if is_modified:
+            value_field.setStyleSheet(
+                f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                f"color: {DiffColors.MODIFIED_FG.name()}; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+            )
+        else:
+            value_field.setStyleSheet(
+                "background-color: #3c3c3c; color: #e0e0e0; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+            )
+
+        layout.addWidget(value_field, 1)
+
+        # Show old value if modified
+        if is_modified and old_value is not None:
+            arrow = QLabel("←")
+            arrow.setStyleSheet("color: #666; font-size: 11px;")
+            layout.addWidget(arrow)
+
+            old_field = QLineEdit(old_value)
+            old_field.setReadOnly(True)
+            old_field.setFrame(False)
+            old_field.setStyleSheet(
+                "background-color: #2a2a2a; color: #888; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
+                "text-decoration: line-through;"
+            )
+            layout.addWidget(old_field, 1)
+
+
+class VectorFieldWidget(QWidget):
+    """Unity-style Vector field with X, Y, Z (and optionally W) components."""
+
+    def __init__(
+        self,
+        value: dict,
+        is_modified: bool = False,
+        old_value: Optional[dict] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._setup_ui(value, is_modified, old_value)
+
+    def _setup_ui(
+        self,
+        value: dict,
+        is_modified: bool,
+        old_value: Optional[dict],
+    ) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(8)
+
+        components = ["x", "y", "z", "w"]
+        labels = ["X", "Y", "Z", "W"]
+        colors = ["#ff6b6b", "#6bff6b", "#6b6bff", "#ffff6b"]
+
+        for comp, label, color in zip(components, labels, colors):
+            if comp not in value:
+                continue
+
+            # Component label
+            comp_label = QLabel(label)
+            comp_label.setFixedWidth(12)
+            comp_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+            layout.addWidget(comp_label)
+
+            # Value
+            val_str = _format_float(value[comp]) if isinstance(value[comp], (int, float)) else str(value[comp])
+            val_field = QLineEdit(val_str)
+            val_field.setReadOnly(True)
+            val_field.setFrame(False)
+
+            # Check if this specific component changed
+            comp_modified = is_modified and old_value and old_value.get(comp) != value.get(comp)
+
+            if comp_modified:
+                val_field.setStyleSheet(
+                    f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                    f"color: {DiffColors.MODIFIED_FG.name()}; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+                )
+            else:
+                val_field.setStyleSheet(
+                    "background-color: #3c3c3c; color: #e0e0e0; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+                )
+
+            layout.addWidget(val_field, 1)
+
+        layout.addStretch()
+
+
+class ColorFieldWidget(QWidget):
+    """Unity-style Color field with R, G, B, A components and color preview."""
+
+    def __init__(
+        self,
+        value: dict,
+        is_modified: bool = False,
+        old_value: Optional[dict] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._setup_ui(value, is_modified, old_value)
+
+    def _setup_ui(
+        self,
+        value: dict,
+        is_modified: bool,
+        old_value: Optional[dict],
+    ) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(4)
+
+        # Color preview
+        r = int(float(value.get("r", 0)) * 255)
+        g = int(float(value.get("g", 0)) * 255)
+        b = int(float(value.get("b", 0)) * 255)
+        a = float(value.get("a", 1))
+
+        color_preview = QFrame()
+        color_preview.setFixedSize(40, 18)
+        color_preview.setStyleSheet(
+            f"background-color: rgba({r}, {g}, {b}, {a}); "
+            "border: 1px solid #555; border-radius: 2px;"
+        )
+        layout.addWidget(color_preview)
+
+        # RGBA values
+        components = ["r", "g", "b", "a"]
+        labels = ["R", "G", "B", "A"]
+
+        for comp, label in zip(components, labels):
+            comp_label = QLabel(label)
+            comp_label.setFixedWidth(12)
+            comp_label.setStyleSheet("color: #888; font-size: 10px;")
+            layout.addWidget(comp_label)
+
+            val = value.get(comp, 0)
+            val_str = _format_float(val) if isinstance(val, (int, float)) else str(val)
+
+            val_field = QLineEdit(val_str)
+            val_field.setReadOnly(True)
+            val_field.setFrame(False)
+            val_field.setFixedWidth(40)
+
+            comp_modified = is_modified and old_value and old_value.get(comp) != value.get(comp)
+
+            if comp_modified:
+                val_field.setStyleSheet(
+                    f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                    f"color: {DiffColors.MODIFIED_FG.name()}; "
+                    "padding: 1px 2px; border-radius: 2px; font-size: 10px;"
+                )
+            else:
+                val_field.setStyleSheet(
+                    "background-color: #3c3c3c; color: #e0e0e0; "
+                    "padding: 1px 2px; border-radius: 2px; font-size: 10px;"
+                )
+
+            layout.addWidget(val_field)
+
+        layout.addStretch()
+
+
+class ReferenceFieldWidget(QWidget):
+    """Unity-style object reference field."""
+
+    def __init__(
+        self,
+        value: dict,
+        is_modified: bool = False,
+        old_value: Optional[dict] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._setup_ui(value, is_modified, old_value)
+
+    def _setup_ui(
+        self,
+        value: dict,
+        is_modified: bool,
+        old_value: Optional[dict],
+    ) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(4)
+
+        # Format reference
+        file_id = value.get("fileID", 0)
+        guid = value.get("guid", "")
+
+        if file_id == 0:
+            display = "None"
+        elif guid:
+            display = f"({guid[:8]}...)"
+        else:
+            display = f"(ID: {file_id})"
+
+        # Reference field
+        ref_field = QLineEdit(display)
+        ref_field.setReadOnly(True)
+        ref_field.setFrame(False)
+
+        if is_modified:
+            ref_field.setStyleSheet(
+                f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                f"color: {DiffColors.MODIFIED_FG.name()}; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+            )
+        else:
+            ref_field.setStyleSheet(
+                "background-color: #3c3c3c; color: #a0a0a0; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
+                "font-style: italic;"
+            )
+
+        layout.addWidget(ref_field, 1)
+
+        # Old value if modified
+        if is_modified and old_value is not None:
+            arrow = QLabel("←")
+            arrow.setStyleSheet("color: #666; font-size: 11px;")
+            layout.addWidget(arrow)
+
+            old_file_id = old_value.get("fileID", 0)
+            old_guid = old_value.get("guid", "")
+
+            if old_file_id == 0:
+                old_display = "None"
+            elif old_guid:
+                old_display = f"({old_guid[:8]}...)"
+            else:
+                old_display = f"(ID: {old_file_id})"
+
+            old_field = QLineEdit(old_display)
+            old_field.setReadOnly(True)
+            old_field.setFrame(False)
+            old_field.setStyleSheet(
+                "background-color: #2a2a2a; color: #666; "
+                "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
+                "text-decoration: line-through; font-style: italic;"
+            )
+            layout.addWidget(old_field, 1)
+
+
 class PropertyRowWidget(QWidget):
-    """A single property row with name and value(s)."""
+    """A single property row with Unity-style field display."""
 
     def __init__(
         self,
@@ -52,85 +377,54 @@ class PropertyRowWidget(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 2, 4, 2)  # Indent for nesting
+        layout.setContentsMargins(16, 2, 8, 2)
         layout.setSpacing(8)
 
         # Property name (nicified)
         name_label = QLabel(nicify_variable_name(self._prop.name))
-        name_label.setMinimumWidth(150)
-        name_label.setStyleSheet("color: #b0b0b0;")
+        name_label.setFixedWidth(130)
+        name_label.setStyleSheet("color: #b0b0b0; font-size: 11px;")
         layout.addWidget(name_label)
 
-        # Values container
-        values_layout = QHBoxLayout()
-        values_layout.setSpacing(16)
+        # Get diff info
+        is_modified = self._prop.diff_status == DiffStatus.MODIFIED and self._show_diff
+        old_value = self._prop.old_value if is_modified else None
 
-        # Current value
-        current_value = self._format_value(self._prop.value)
-        value_label = QLabel(current_value)
-        value_label.setWordWrap(True)
-        value_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Create appropriate field widget based on value type
+        value = self._prop.value
 
-        # Apply diff styling
-        is_modified = self._prop.diff_status == DiffStatus.MODIFIED
-        if is_modified and self._show_diff:
-            value_label.setStyleSheet(
-                f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
-                f"color: {DiffColors.MODIFIED_FG.name()}; "
-                "padding: 2px 4px; border-radius: 2px;"
-            )
+        if _is_vector_like(value):
+            field = VectorFieldWidget(value, is_modified, old_value)
+        elif _is_color_like(value):
+            field = ColorFieldWidget(value, is_modified, old_value)
+        elif _is_reference(value):
+            field = ReferenceFieldWidget(value, is_modified, old_value)
+        else:
+            # Simple value field
+            value_str = self._format_simple_value(value)
+            old_str = self._format_simple_value(old_value) if old_value is not None else None
+            field = FieldWidget("", value_str, is_modified, old_str)
 
-        values_layout.addWidget(value_label, 1)
+        layout.addWidget(field, 1)
 
-        # Show old value if modified
-        if is_modified and self._prop.old_value is not None and self._show_diff:
-            arrow_label = QLabel("←")
-            arrow_label.setStyleSheet("color: #666;")
-            values_layout.addWidget(arrow_label)
-
-            old_value = self._format_value(self._prop.old_value)
-            old_label = QLabel(old_value)
-            old_label.setWordWrap(True)
-            old_label.setStyleSheet("color: #888; text-decoration: line-through;")
-            old_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            values_layout.addWidget(old_label, 1)
-
-        layout.addLayout(values_layout, 1)
-
-    def _format_value(self, value: Any) -> str:
-        """Format a value for display."""
+    def _format_simple_value(self, value: Any) -> str:
+        """Format a simple value for display."""
         if value is None:
             return "None"
         if isinstance(value, bool):
             return "✓" if value else "✗"
         if isinstance(value, float):
-            # Format floats with reasonable precision
-            return f"{value:.4g}"
-        if isinstance(value, dict):
-            # Handle Unity object references
-            if "fileID" in value:
-                file_id = value.get("fileID", 0)
-                if file_id == 0:
-                    return "None"
-                guid = value.get("guid", "")
-                if guid:
-                    return f"{{fileID: {file_id}, guid: {guid[:8]}...}}"
-                return f"{{fileID: {file_id}}}"
-            # Compact dict display
-            import json
-
-            try:
-                return json.dumps(value, ensure_ascii=False)[:80]
-            except Exception:
-                return str(value)[:80]
+            return _format_float(value)
+        if isinstance(value, int):
+            return str(value)
         if isinstance(value, list):
             if len(value) == 0:
-                return "[]"
-            if len(value) <= 3:
-                items = ", ".join(str(v) for v in value)
-                return f"[{items}]"
-            return f"[{len(value)} items]"
-        return str(value)[:100]
+                return "[ ]"
+            return f"Array [{len(value)}]"
+        if isinstance(value, dict):
+            # Generic dict (not vector/color/reference)
+            return "{...}"
+        return str(value)[:60]
 
 
 class ComponentWidget(QFrame):
@@ -198,7 +492,7 @@ class ComponentWidget(QFrame):
         self._expand_btn.clicked.connect(self._toggle_expand)
         header_layout.addWidget(self._expand_btn)
 
-        # Component icon (emoji for now, could be replaced with proper icons)
+        # Component icon
         icon_label = QLabel(self._get_component_icon())
         icon_label.setStyleSheet("font-size: 14px;")
         header_layout.addWidget(icon_label)
@@ -208,21 +502,21 @@ class ComponentWidget(QFrame):
             self._component.type_name, self._component.script_name
         )
         name_label = QLabel(display_name)
-        name_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        name_label.setStyleSheet("font-weight: bold; font-size: 12px;")
 
         # Apply diff status color
         status = self._component.diff_status
         if status == DiffStatus.ADDED:
             name_label.setStyleSheet(
-                f"font-weight: bold; font-size: 13px; color: {DiffColors.ADDED_FG.name()};"
+                f"font-weight: bold; font-size: 12px; color: {DiffColors.ADDED_FG.name()};"
             )
         elif status == DiffStatus.REMOVED:
             name_label.setStyleSheet(
-                f"font-weight: bold; font-size: 13px; color: {DiffColors.REMOVED_FG.name()};"
+                f"font-weight: bold; font-size: 12px; color: {DiffColors.REMOVED_FG.name()};"
             )
         elif status == DiffStatus.MODIFIED:
             name_label.setStyleSheet(
-                f"font-weight: bold; font-size: 13px; color: {DiffColors.MODIFIED_FG.name()};"
+                f"font-weight: bold; font-size: 12px; color: {DiffColors.MODIFIED_FG.name()};"
             )
 
         header_layout.addWidget(name_label)
@@ -231,7 +525,7 @@ class ComponentWidget(QFrame):
         # Diff status badge
         if status != DiffStatus.UNCHANGED:
             badge = QLabel(self._get_status_badge(status))
-            badge.setStyleSheet("font-size: 11px; color: #888;")
+            badge.setStyleSheet("font-size: 10px; color: #888;")
             header_layout.addWidget(badge)
 
         # Set header background based on status
@@ -286,9 +580,9 @@ class ComponentWidget(QFrame):
     def _get_status_badge(self, status: DiffStatus) -> str:
         """Get status badge text."""
         badges = {
-            DiffStatus.ADDED: "[Added]",
-            DiffStatus.REMOVED: "[Removed]",
-            DiffStatus.MODIFIED: "[Modified]",
+            DiffStatus.ADDED: "[+]",
+            DiffStatus.REMOVED: "[-]",
+            DiffStatus.MODIFIED: "[~]",
         }
         return badges.get(status, "")
 
@@ -298,15 +592,21 @@ class ComponentWidget(QFrame):
         if self._other_component:
             other_props = {p.path: p for p in self._other_component.properties}
 
+        # Filter out internal Unity properties
+        visible_props = [
+            p for p in self._component.properties
+            if p.name not in SKIP_PROPERTIES
+        ]
+
         # Group properties by category (based on path structure)
-        grouped = self._group_properties(self._component.properties)
+        grouped = self._group_properties(visible_props)
 
         for group_name, props in grouped.items():
             if group_name:
                 # Add group header
                 group_label = QLabel(group_name)
                 group_label.setStyleSheet(
-                    "color: #909090; font-size: 11px; padding: 4px 8px; "
+                    "color: #909090; font-size: 10px; padding: 4px 8px; "
                     "background-color: #353535;"
                 )
                 self._properties_layout.addWidget(group_label)
@@ -382,21 +682,21 @@ class GameObjectHeaderWidget(QWidget):
 
         # GameObject name
         name_label = QLabel(self._game_object.name)
-        name_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        name_label.setStyleSheet("font-size: 14px; font-weight: bold;")
 
         # Apply diff status
         status = self._game_object.diff_status
         if status == DiffStatus.ADDED:
             name_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {DiffColors.ADDED_FG.name()};"
+                f"font-size: 14px; font-weight: bold; color: {DiffColors.ADDED_FG.name()};"
             )
         elif status == DiffStatus.REMOVED:
             name_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {DiffColors.REMOVED_FG.name()};"
+                f"font-size: 14px; font-weight: bold; color: {DiffColors.REMOVED_FG.name()};"
             )
         elif status == DiffStatus.MODIFIED:
             name_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {DiffColors.MODIFIED_FG.name()};"
+                f"font-size: 14px; font-weight: bold; color: {DiffColors.MODIFIED_FG.name()};"
             )
 
         name_row.addWidget(name_label)
@@ -409,11 +709,11 @@ class GameObjectHeaderWidget(QWidget):
         meta_row.setSpacing(16)
 
         tag_label = QLabel(f"Tag: {self._game_object.tag}")
-        tag_label.setStyleSheet("color: #888; font-size: 11px;")
+        tag_label.setStyleSheet("color: #888; font-size: 10px;")
         meta_row.addWidget(tag_label)
 
         layer_label = QLabel(f"Layer: {self._game_object.layer}")
-        layer_label.setStyleSheet("color: #888; font-size: 11px;")
+        layer_label.setStyleSheet("color: #888; font-size: 10px;")
         meta_row.addWidget(layer_label)
 
         meta_row.addStretch()
@@ -466,7 +766,7 @@ class InspectorWidget(QScrollArea):
         # Placeholder message
         self._placeholder = QLabel("Select an object to inspect")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setStyleSheet("color: #666; font-size: 14px; padding: 40px;")
+        self._placeholder.setStyleSheet("color: #666; font-size: 12px; padding: 40px;")
         self._content_layout.addWidget(self._placeholder)
 
         self.setWidget(self._content)

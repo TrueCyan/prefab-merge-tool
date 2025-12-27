@@ -152,7 +152,7 @@ class HierarchyTreeModel(QAbstractItemModel):
         super().__init__(parent)
         self._document: Optional[UnityDocument] = None
         self._root = TreeNode(None, NodeType.ROOT)
-        self._show_components = True
+        self._show_components = False  # Unity Hierarchy style: GameObjects only
 
     def set_document(self, document: Optional[UnityDocument]) -> None:
         """Set the Unity document to display."""
