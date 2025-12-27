@@ -102,9 +102,10 @@ class UnityDocument:
     root_objects: list[UnityGameObject] = field(default_factory=list)
     all_objects: dict[str, UnityGameObject] = field(default_factory=dict)
     all_components: dict[str, UnityComponent] = field(default_factory=dict)
-    
+
     # Metadata
     unity_version: Optional[str] = None
+    project_root: Optional[str] = None  # Unity project root path
     
     def get_object(self, file_id: str) -> Optional[UnityGameObject]:
         """Get GameObject by fileID."""
