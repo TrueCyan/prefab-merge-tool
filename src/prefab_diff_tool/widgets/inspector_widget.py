@@ -133,11 +133,12 @@ class FieldWidget(QWidget):
         layout.setContentsMargins(0, 1, 0, 1)
         layout.setSpacing(4)
 
-        # Label
-        label_widget = QLabel(label)
-        label_widget.setFixedWidth(60)
-        label_widget.setStyleSheet("color: #b0b0b0; font-size: 11px;")
-        layout.addWidget(label_widget)
+        # Label (only if not empty)
+        if label:
+            label_widget = QLabel(label)
+            label_widget.setFixedWidth(60)
+            label_widget.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+            layout.addWidget(label_widget)
 
         # Value field (read-only)
         value_field = QLineEdit(value)
