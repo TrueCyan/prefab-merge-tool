@@ -423,6 +423,9 @@ class DiffView(QWidget):
                     other_obj = self._left_doc.get_object(target_file_id)
                 self._inspector.set_document(self._right_doc)
                 self._inspector.set_game_object(data, other_obj)
+                # If it was a component reference, scroll to that component
+                if is_component_ref:
+                    self._inspector.scroll_to_component(file_id)
             return
 
         # If not found in right, try left tree
@@ -439,6 +442,9 @@ class DiffView(QWidget):
                     other_obj = self._right_doc.get_object(target_file_id)
                 self._inspector.set_document(self._left_doc)
                 self._inspector.set_game_object(data, other_obj)
+                # If it was a component reference, scroll to that component
+                if is_component_ref:
+                    self._inspector.scroll_to_component(file_id)
 
     def _on_external_reference_clicked(self, guid: str) -> None:
         """Handle external reference click - open file explorer to show the asset."""
