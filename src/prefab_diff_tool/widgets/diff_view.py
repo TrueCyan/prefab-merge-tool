@@ -161,6 +161,9 @@ class DiffView(QWidget):
             self._left_model.set_document(self._left_doc)
             self._right_model.set_document(self._right_doc)
 
+            # Set document for Inspector to resolve internal references
+            self._inspector.set_document(self._right_doc)
+
             self._left_tree.expandAll()
             self._right_tree.expandAll()
 
@@ -276,6 +279,8 @@ class DiffView(QWidget):
             other_obj = None
             if self._right_doc:
                 other_obj = self._right_doc.get_object(data.file_id)
+            # Set document for resolving references (use left doc for left tree)
+            self._inspector.set_document(self._left_doc)
             self._inspector.set_game_object(data, other_obj)
 
             # Sync selection with right tree
@@ -291,6 +296,8 @@ class DiffView(QWidget):
             other_obj = None
             if self._left_doc:
                 other_obj = self._left_doc.get_object(data.file_id)
+            # Set document for resolving references (use right doc for right tree)
+            self._inspector.set_document(self._right_doc)
             self._inspector.set_game_object(data, other_obj)
 
             # Sync selection with left tree

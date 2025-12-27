@@ -52,13 +52,13 @@ TRANSFORM_SKIP_PROPERTIES = {
     "m_Children",  # Hierarchy info - shown in Hierarchy panel
     "m_RootOrder",  # Internal ordering
     "m_ConstrainProportionsScale",  # Shown as chain button instead
-    "m_LocalEulerAnglesHint",  # Euler hint (redundant with rotation)
+    "m_LocalRotation",  # Quaternion - use EulerAnglesHint instead for display
 }
 
 # Properties to display for Transform in Normal mode (Unity Inspector style)
 TRANSFORM_DISPLAY_PROPERTIES = {
     "m_LocalPosition",
-    "m_LocalRotation",
+    "m_LocalEulerAnglesHint",  # Euler angles (shown as "Rotation" in Unity)
     "m_LocalScale",
 }
 
@@ -133,11 +133,12 @@ class FieldWidget(QWidget):
         layout.setContentsMargins(0, 1, 0, 1)
         layout.setSpacing(4)
 
-        # Label
-        label_widget = QLabel(label)
-        label_widget.setFixedWidth(60)
-        label_widget.setStyleSheet("color: #b0b0b0; font-size: 11px;")
-        layout.addWidget(label_widget)
+        # Label (only if not empty)
+        if label:
+            label_widget = QLabel(label)
+            label_widget.setFixedWidth(60)
+            label_widget.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+            layout.addWidget(label_widget)
 
         # Value field (read-only)
         value_field = QLineEdit(value)
@@ -841,11 +842,11 @@ class ComponentWidget(QFrame):
         constrain_proportions: bool,
     ) -> None:
         """Populate Transform properties in Unity Inspector style."""
-        # Define property order
-        order = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+        # Define property order (use EulerAnglesHint for Rotation like Unity Inspector)
+        order = ["m_LocalPosition", "m_LocalEulerAnglesHint", "m_LocalScale"]
         display_names = {
             "m_LocalPosition": "Position",
-            "m_LocalRotation": "Rotation",
+            "m_LocalEulerAnglesHint": "Rotation",
             "m_LocalScale": "Scale",
             "m_AnchoredPosition": "Anchored Position",
             "m_SizeDelta": "Size Delta",
@@ -857,7 +858,7 @@ class ComponentWidget(QFrame):
         # Add RectTransform properties
         if self._component.type_name == "RectTransform":
             order = ["m_AnchoredPosition", "m_SizeDelta", "m_AnchorMin", "m_AnchorMax", "m_Pivot",
-                     "m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+                     "m_LocalPosition", "m_LocalEulerAnglesHint", "m_LocalScale"]
 
         props_by_name = {p.name: p for p in props}
 
