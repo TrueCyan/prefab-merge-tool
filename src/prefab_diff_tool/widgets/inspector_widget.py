@@ -32,6 +32,7 @@ from prefab_diff_tool.utils.naming import (
     nicify_variable_name,
     get_component_display_name,
 )
+from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 
 # Properties to skip in Normal mode (internal Unity properties)
@@ -401,11 +402,13 @@ class ReferenceFieldWidget(QWidget):
         is_modified: bool = False,
         old_value: Optional[dict] = None,
         document: Optional[Any] = None,  # UnityDocument for resolving internal refs
+        guid_resolver: Optional[GuidResolver] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self._value = value
         self._document = document
+        self._guid_resolver = guid_resolver
         self._setup_ui(value, is_modified, old_value)
 
     def _resolve_reference(self, value: dict) -> str:
@@ -418,7 +421,12 @@ class ReferenceFieldWidget(QWidget):
 
         # External reference (has GUID)
         if guid:
-            # Try to get info from document if available
+            # Try to resolve using GUID resolver
+            if self._guid_resolver:
+                name, asset_type = self._guid_resolver.resolve_with_type(guid)
+                if name:
+                    return f"{name} ({asset_type})"
+            # Fallback to showing partial GUID
             return f"External Asset ({guid[:8]}...)"
 
         # Internal reference - try to resolve from document
@@ -534,6 +542,7 @@ class PropertyRowWidget(QWidget):
         other_value: Any = None,
         show_diff: bool = True,
         document: Optional[Any] = None,
+        guid_resolver: Optional[GuidResolver] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -541,6 +550,7 @@ class PropertyRowWidget(QWidget):
         self._other_value = other_value
         self._show_diff = show_diff
         self._document = document
+        self._guid_resolver = guid_resolver
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -566,7 +576,9 @@ class PropertyRowWidget(QWidget):
         elif _is_color_like(value):
             field = ColorFieldWidget(value, is_modified, old_value)
         elif _is_reference(value):
-            field = ReferenceFieldWidget(value, is_modified, old_value, self._document)
+            field = ReferenceFieldWidget(
+                value, is_modified, old_value, self._document, self._guid_resolver
+            )
             # Forward signals
             field.reference_clicked.connect(self.reference_clicked)
             field.external_reference_clicked.connect(self.external_reference_clicked)
@@ -612,6 +624,7 @@ class ComponentWidget(QFrame):
         other_component: Optional[UnityComponent] = None,
         debug_mode: bool = False,
         document: Optional[Any] = None,  # UnityDocument for resolving refs
+        guid_resolver: Optional[GuidResolver] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -619,6 +632,7 @@ class ComponentWidget(QFrame):
         self._other_component = other_component
         self._debug_mode = debug_mode
         self._document = document
+        self._guid_resolver = guid_resolver
         self._is_expanded = True
         self._property_widgets: list[QWidget] = []
         self._setup_ui()
@@ -802,7 +816,11 @@ class ComponentWidget(QFrame):
                     if other_prop:
                         other_value = other_prop.value
 
-                    row = PropertyRowWidget(prop, other_value, document=self._document)
+                    row = PropertyRowWidget(
+                        prop, other_value,
+                        document=self._document,
+                        guid_resolver=self._guid_resolver,
+                    )
                     self._properties_layout.addWidget(row)
                     self._property_widgets.append(row)
 
@@ -1025,6 +1043,7 @@ class InspectorWidget(QScrollArea):
         self._game_object: Optional[UnityGameObject] = None
         self._other_object: Optional[UnityGameObject] = None  # For comparison
         self._document: Optional[Any] = None  # UnityDocument for resolving references
+        self._guid_resolver: Optional[GuidResolver] = None
         self._component_widgets: list[ComponentWidget] = []
         self._debug_mode = False  # Normal mode by default
         self._setup_ui()
@@ -1125,6 +1144,12 @@ class InspectorWidget(QScrollArea):
     def set_document(self, document: Optional[Any]) -> None:
         """Set the Unity document for resolving references."""
         self._document = document
+        # Setup GUID resolver if project root is available
+        if document and hasattr(document, "project_root") and document.project_root:
+            from pathlib import Path
+
+            self._guid_resolver = GuidResolver()
+            self._guid_resolver.set_project_root(Path(document.project_root))
 
     def set_game_object(
         self,
@@ -1162,6 +1187,7 @@ class InspectorWidget(QScrollArea):
                 other_component,
                 debug_mode=self._debug_mode,
                 document=self._document,
+                guid_resolver=self._guid_resolver,
             )
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
@@ -1201,6 +1227,7 @@ class InspectorWidget(QScrollArea):
                 other_comp,
                 debug_mode=self._debug_mode,
                 document=self._document,
+                guid_resolver=self._guid_resolver,
             )
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)

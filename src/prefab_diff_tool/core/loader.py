@@ -16,6 +16,7 @@ from prefab_diff_tool.core.unity_model import (
     UnityComponent,
     UnityProperty,
 )
+from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 
 # Additional Unity class IDs not in unityflow's mapping
@@ -66,6 +67,7 @@ class UnityFileLoader:
     def __init__(self):
         self._raw_doc: Optional[UnityYAMLDocument] = None
         self._entries_by_id: dict[str, Any] = {}
+        self._guid_resolver = GuidResolver()
 
     def _get_entry_data(self, entry: Any) -> dict:
         """Get the data dictionary from a UnityYAMLObject."""
@@ -92,6 +94,12 @@ class UnityFileLoader:
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
         self._entries_by_id = {}
 
+        # Find Unity project root and setup GUID resolver
+        file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
+        project_root = GuidResolver.find_project_root(file_path_obj)
+        if project_root:
+            self._guid_resolver.set_project_root(project_root)
+
         # Index all entries by their file_id
         for entry in self._raw_doc.objects:
             file_id = getattr(entry, "file_id", None)
@@ -100,6 +108,7 @@ class UnityFileLoader:
 
         # Create document
         doc = UnityDocument(file_path=str(file_path))
+        doc.project_root = str(project_root) if project_root else None
 
         # Extract all GameObjects and Components
         game_objects: dict[str, UnityGameObject] = {}
@@ -166,8 +175,10 @@ class UnityFileLoader:
             script_ref = data.get("m_Script")
             if script_ref:
                 comp.script_guid = self._extract_guid(script_ref)
-                # Try to get script name from metadata if available
+                # Try to get script name from data first, then resolve from GUID
                 comp.script_name = self._guess_script_name(data)
+                if not comp.script_name and comp.script_guid:
+                    comp.script_name = self._guid_resolver.resolve(comp.script_guid)
 
         # Extract all properties
         comp.properties = self._extract_properties(data)
@@ -200,16 +211,9 @@ class UnityFileLoader:
             return UnityProperty(name=name, value=value, path=path)
 
         elif isinstance(value, dict):
-            # Check if it's a reference (has fileID)
-            if "fileID" in value:
-                return UnityProperty(
-                    name=name,
-                    value=self._format_reference(value),
-                    path=path,
-                )
-            else:
-                # Nested dict - flatten to string representation
-                return UnityProperty(name=name, value=value, path=path)
+            # Keep dict as-is (including references with fileID)
+            # inspector_widget.py will handle formatting for display
+            return UnityProperty(name=name, value=value, path=path)
 
         elif isinstance(value, list):
             return UnityProperty(name=name, value=value, path=path)
@@ -217,14 +221,6 @@ class UnityFileLoader:
         else:
             # Complex object - try to get a reasonable representation
             return UnityProperty(name=name, value=str(value), path=path)
-
-    def _format_reference(self, ref: dict) -> str:
-        """Format a Unity reference dict as string."""
-        file_id = ref.get("fileID", 0)
-        guid = ref.get("guid", "")
-        if guid:
-            return f"{{fileID: {file_id}, guid: {guid}}}"
-        return f"{{fileID: {file_id}}}"
 
     def _extract_guid(self, script_ref: Any) -> Optional[str]:
         """Extract GUID from a script reference."""
