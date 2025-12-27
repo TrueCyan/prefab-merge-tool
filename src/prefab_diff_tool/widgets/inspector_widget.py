@@ -437,17 +437,15 @@ class ReferenceFieldWidget(QWidget):
             if go:
                 return f"{go.name} (GameObject)"
 
-            # Check if it's a Component
+            # Check if it's a Component - use O(1) reverse lookup
             comp = self._document.all_components.get(file_id_str)
             if comp:
-                # Find the owner GameObject
-                for obj in self._document.all_objects.values():
-                    for c in obj.components:
-                        if c.file_id == file_id_str:
-                            comp_name = comp.script_name or comp.type_name
-                            return f"{obj.name} ({comp_name})"
-                # Component found but no owner
+                # Use get_component_owner for O(1) lookup instead of O(n×m) iteration
+                owner = self._document.get_component_owner(file_id_str)
                 comp_name = comp.script_name or comp.type_name
+                if owner:
+                    return f"{owner.name} ({comp_name})"
+                # Component found but no owner
                 return f"({comp_name})"
 
         # Fallback

@@ -257,6 +257,14 @@ class UnityFileLoader:
                 if go_id in game_objects:
                     game_objects[go_id].components.append(comp)
 
+        # Build Transform ID -> GameObject index for O(1) lookup
+        # This avoids O(n²) complexity when building hierarchy
+        transform_to_go: dict[str, UnityGameObject] = {}
+        for go in game_objects.values():
+            transform = go.get_transform()
+            if transform:
+                transform_to_go[transform.file_id] = go
+
         # Second pass: build Transform hierarchy using m_Father only
         # (Using m_Father is sufficient and avoids duplicate children)
         for go_id, go in game_objects.items():
@@ -276,10 +284,8 @@ class UnityFileLoader:
             if father_ref and isinstance(father_ref, dict):
                 father_id = str(father_ref.get("fileID", ""))
                 if father_id and father_id != "0":
-                    # Find parent GameObject through its transform
-                    parent_go = self._find_go_by_transform(
-                        game_objects, father_id
-                    )
+                    # O(1) lookup using index instead of O(n) search
+                    parent_go = transform_to_go.get(father_id)
                     if parent_go and go not in parent_go.children:
                         go.parent = parent_go
                         parent_go.children.append(go)
@@ -287,18 +293,6 @@ class UnityFileLoader:
         # Sort children by name for consistent ordering
         for go in game_objects.values():
             go.children.sort(key=lambda x: x.name)
-
-    def _find_go_by_transform(
-        self,
-        game_objects: dict[str, UnityGameObject],
-        transform_id: str,
-    ) -> Optional[UnityGameObject]:
-        """Find GameObject that owns the given transform."""
-        for go in game_objects.values():
-            transform = go.get_transform()
-            if transform and transform.file_id == transform_id:
-                return go
-        return None
 
 
 def load_unity_file(file_path: Path) -> UnityDocument:

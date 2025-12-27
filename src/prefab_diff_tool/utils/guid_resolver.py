@@ -13,23 +13,26 @@ class GuidResolver:
     """
     Resolves Unity GUIDs to asset names by searching .meta files.
 
-    Caches results for performance.
+    Caches results for performance. Supports auto-indexing for bulk lookups.
     """
 
     # Pattern to extract GUID from .meta file content
     GUID_PATTERN = re.compile(r"guid:\s*([a-fA-F0-9]{32})")
 
-    def __init__(self, project_root: Optional[Path] = None):
+    def __init__(self, project_root: Optional[Path] = None, auto_index: bool = True):
         """
         Initialize the resolver.
 
         Args:
             project_root: Unity project root path (containing Assets folder).
                          If None, will be detected from file paths.
+            auto_index: If True, automatically index the project on first resolve.
+                       This is faster for multiple lookups. Default is True.
         """
         self._project_root = project_root
         self._cache: dict[str, Optional[str]] = {}  # guid -> asset name
         self._indexed = False
+        self._auto_index = auto_index
 
     @staticmethod
     def find_project_root(file_path: Path) -> Optional[Path]:
@@ -67,12 +70,18 @@ class GuidResolver:
 
         return None
 
-    def set_project_root(self, project_root: Path) -> None:
-        """Set project root and clear cache."""
+    def set_project_root(self, project_root: Path, auto_index: bool = True) -> None:
+        """Set project root and clear cache.
+
+        Args:
+            project_root: Unity project root path.
+            auto_index: If True, project will be indexed on first resolve.
+        """
         if self._project_root != project_root:
             self._project_root = project_root
             self._cache.clear()
             self._indexed = False
+            self._auto_index = auto_index
 
     def index_project(self) -> None:
         """
@@ -146,12 +155,19 @@ class GuidResolver:
         if guid in self._cache:
             return self._cache[guid]
 
-        # If not indexed and we have a project root, try to find it
+        # If not indexed and we have a project root
         if not self._indexed and self._project_root:
-            # Do a targeted search instead of full index
-            result = self._search_for_guid(guid)
-            self._cache[guid] = result
-            return result
+            # Auto-index the entire project for faster bulk lookups
+            if self._auto_index:
+                self.index_project()
+                # After indexing, check cache again
+                if guid in self._cache:
+                    return self._cache[guid]
+            else:
+                # Do a targeted search (slower for multiple lookups)
+                result = self._search_for_guid(guid)
+                self._cache[guid] = result
+                return result
 
         return None
 
@@ -198,46 +214,10 @@ class GuidResolver:
         Returns:
             Tuple of (asset_name, asset_type) or (None, None)
         """
-        if not guid:
-            return None, None
-
-        guid = guid.lower()
-
-        # Check if already resolved
-        if guid in self._cache:
-            name = self._cache[guid]
-            if name:
-                return name, self._guess_asset_type(name)
-            return None, None
-
-        # Search for it
-        if self._project_root:
-            assets_path = self._project_root / "Assets"
-            search_paths = [assets_path] if assets_path.exists() else []
-            packages_path = self._project_root / "Packages"
-            if packages_path.exists():
-                search_paths.append(packages_path)
-
-            for search_path in search_paths:
-                for meta_file in search_path.rglob("*.meta"):
-                    try:
-                        file_guid = self._extract_guid_from_meta(meta_file)
-                        if file_guid == guid:
-                            asset_path = meta_file.with_suffix("")
-                            asset_name = asset_path.stem
-                            asset_type = self._guess_asset_type(asset_path.name)
-
-                            # Cache the name
-                            if asset_path.suffix and asset_path.suffix != ".cs":
-                                self._cache[guid] = asset_path.name
-                            else:
-                                self._cache[guid] = asset_name
-
-                            return asset_name, asset_type
-                    except (OSError, IOError):
-                        continue
-
-        self._cache[guid] = None
+        # Reuse resolve() to leverage caching and avoid duplicate rglob scans
+        name = self.resolve(guid)
+        if name:
+            return name, self._guess_asset_type(name)
         return None, None
 
     def _guess_asset_type(self, filename: str) -> str:

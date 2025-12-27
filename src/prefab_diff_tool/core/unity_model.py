@@ -106,29 +106,47 @@ class UnityDocument:
     # Metadata
     unity_version: Optional[str] = None
     project_root: Optional[str] = None  # Unity project root path
-    
+
+    # Reverse lookup cache: component_id -> owner GameObject
+    _component_owners: Optional[dict[str, "UnityGameObject"]] = field(
+        default=None, repr=False
+    )
+
     def get_object(self, file_id: str) -> Optional[UnityGameObject]:
         """Get GameObject by fileID."""
         return self.all_objects.get(file_id)
-    
+
     def get_component(self, file_id: str) -> Optional[UnityComponent]:
         """Get component by fileID."""
         return self.all_components.get(file_id)
-    
+
+    def get_component_owner(self, component_id: str) -> Optional["UnityGameObject"]:
+        """Get the GameObject that owns a component (O(1) lookup)."""
+        if self._component_owners is None:
+            self._build_component_owners()
+        return self._component_owners.get(component_id)
+
+    def _build_component_owners(self) -> None:
+        """Build reverse lookup map: component_id -> owner GameObject."""
+        self._component_owners = {}
+        for go in self.all_objects.values():
+            for comp in go.components:
+                self._component_owners[comp.file_id] = go
+
     def iter_all_objects(self):
         """Iterate over all GameObjects in the document."""
         for root in self.root_objects:
             yield root
             yield from root.iter_descendants()
-    
+
     @property
     def object_count(self) -> int:
         return len(self.all_objects)
-    
+
     @property
     def component_count(self) -> int:
         return len(self.all_components)
-    
+
     def __repr__(self) -> str:
         return f"UnityDocument({self.file_path!r}, objects={self.object_count})"
 
