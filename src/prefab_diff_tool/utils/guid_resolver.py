@@ -31,6 +31,7 @@ class GuidResolver:
         """
         self._project_root = project_root
         self._cache: dict[str, Optional[str]] = {}  # guid -> asset name
+        self._path_cache: dict[str, Optional[Path]] = {}  # guid -> full asset path
         self._indexed = False
         self._auto_index = auto_index
 
@@ -80,6 +81,7 @@ class GuidResolver:
         if self._project_root != project_root:
             self._project_root = project_root
             self._cache.clear()
+            self._path_cache.clear()
             self._indexed = False
             self._auto_index = auto_index
 
@@ -108,7 +110,7 @@ class GuidResolver:
                 try:
                     guid = self._extract_guid_from_meta(meta_file)
                     if guid:
-                        # Get asset name (filename without .meta)
+                        # Get asset path (without .meta extension)
                         asset_path = meta_file.with_suffix("")
                         asset_name = asset_path.stem
 
@@ -117,6 +119,7 @@ class GuidResolver:
                             asset_name = asset_path.name
 
                         self._cache[guid] = asset_name
+                        self._path_cache[guid] = asset_path
                 except (OSError, IOError):
                     continue
 
@@ -220,6 +223,30 @@ class GuidResolver:
             return name, self._guess_asset_type(name)
         return None, None
 
+    def resolve_path(self, guid: str) -> Optional[Path]:
+        """
+        Resolve a GUID to full asset file path.
+
+        Args:
+            guid: The GUID to resolve
+
+        Returns:
+            Full path to the asset file, or None if not found
+        """
+        if not guid:
+            return None
+
+        guid = guid.lower()
+
+        # Check path cache first
+        if guid in self._path_cache:
+            return self._path_cache[guid]
+
+        # Ensure indexed (this will also populate path cache)
+        self.resolve(guid)
+
+        return self._path_cache.get(guid)
+
     def _guess_asset_type(self, filename: str) -> str:
         """Guess asset type from filename extension."""
         ext_map = {
@@ -279,6 +306,7 @@ class GuidResolver:
     def clear_cache(self) -> None:
         """Clear the GUID cache."""
         self._cache.clear()
+        self._path_cache.clear()
         self._indexed = False
 
 

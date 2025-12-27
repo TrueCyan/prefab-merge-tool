@@ -2,11 +2,14 @@
 2-way diff view widget.
 """
 
+import platform
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -26,6 +29,7 @@ from prefab_diff_tool.core.unity_model import (
 from prefab_diff_tool.core.loader import load_unity_file
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
+from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 
 @dataclass
@@ -59,6 +63,7 @@ class DiffView(QWidget):
         self._diff_result: Optional[DiffResult] = None
         self._changes: list[Change] = []
         self._current_change_index: int = -1
+        self._guid_resolver: Optional[GuidResolver] = None
 
         self._left_model = HierarchyTreeModel()
         self._right_model = HierarchyTreeModel()
@@ -158,6 +163,11 @@ class DiffView(QWidget):
         try:
             self._left_doc = load_unity_file(left)
             self._right_doc = load_unity_file(right)
+
+            # Setup GUID resolver for external reference navigation
+            if self._right_doc and self._right_doc.project_root:
+                self._guid_resolver = GuidResolver()
+                self._guid_resolver.set_project_root(Path(self._right_doc.project_root))
 
             self._perform_diff()
 
@@ -405,7 +415,33 @@ class DiffView(QWidget):
                 self._inspector.set_game_object(data, other_obj)
 
     def _on_external_reference_clicked(self, guid: str) -> None:
-        """Handle external reference click - show info about external asset."""
-        # External assets cannot be navigated to within this document
-        # Could show a status message or tooltip in the future
-        pass
+        """Handle external reference click - open file explorer to show the asset."""
+        if not guid or not self._guid_resolver:
+            return
+
+        # Resolve GUID to file path
+        asset_path = self._guid_resolver.resolve_path(guid)
+        if not asset_path or not asset_path.exists():
+            return
+
+        # Open file explorer and select the file
+        self._show_in_file_explorer(asset_path)
+
+    def _show_in_file_explorer(self, path: Path) -> None:
+        """Open file explorer and select/highlight the given file."""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                # Windows: explorer /select,<path>
+                subprocess.run(["explorer", "/select,", str(path)], check=False)
+            elif system == "Darwin":
+                # macOS: open -R <path>
+                subprocess.run(["open", "-R", str(path)], check=False)
+            else:
+                # Linux: open parent folder (file selection not universally supported)
+                parent = path.parent
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
+        except Exception:
+            # Fallback: just open the parent folder
+            parent = path.parent
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
