@@ -200,16 +200,9 @@ class UnityFileLoader:
             return UnityProperty(name=name, value=value, path=path)
 
         elif isinstance(value, dict):
-            # Check if it's a reference (has fileID)
-            if "fileID" in value:
-                return UnityProperty(
-                    name=name,
-                    value=self._format_reference(value),
-                    path=path,
-                )
-            else:
-                # Nested dict - flatten to string representation
-                return UnityProperty(name=name, value=value, path=path)
+            # Keep dict as-is (including references with fileID)
+            # inspector_widget.py will handle formatting for display
+            return UnityProperty(name=name, value=value, path=path)
 
         elif isinstance(value, list):
             return UnityProperty(name=name, value=value, path=path)
@@ -217,14 +210,6 @@ class UnityFileLoader:
         else:
             # Complex object - try to get a reasonable representation
             return UnityProperty(name=name, value=str(value), path=path)
-
-    def _format_reference(self, ref: dict) -> str:
-        """Format a Unity reference dict as string."""
-        file_id = ref.get("fileID", 0)
-        guid = ref.get("guid", "")
-        if guid:
-            return f"{{fileID: {file_id}, guid: {guid}}}"
-        return f"{{fileID: {file_id}}}"
 
     def _extract_guid(self, script_ref: Any) -> Optional[str]:
         """Extract GUID from a script reference."""
