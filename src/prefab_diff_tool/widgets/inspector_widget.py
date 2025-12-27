@@ -52,13 +52,13 @@ TRANSFORM_SKIP_PROPERTIES = {
     "m_Children",  # Hierarchy info - shown in Hierarchy panel
     "m_RootOrder",  # Internal ordering
     "m_ConstrainProportionsScale",  # Shown as chain button instead
-    "m_LocalEulerAnglesHint",  # Euler hint (redundant with rotation)
+    "m_LocalRotation",  # Quaternion - use EulerAnglesHint instead for display
 }
 
 # Properties to display for Transform in Normal mode (Unity Inspector style)
 TRANSFORM_DISPLAY_PROPERTIES = {
     "m_LocalPosition",
-    "m_LocalRotation",
+    "m_LocalEulerAnglesHint",  # Euler angles (shown as "Rotation" in Unity)
     "m_LocalScale",
 }
 
@@ -842,11 +842,11 @@ class ComponentWidget(QFrame):
         constrain_proportions: bool,
     ) -> None:
         """Populate Transform properties in Unity Inspector style."""
-        # Define property order
-        order = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+        # Define property order (use EulerAnglesHint for Rotation like Unity Inspector)
+        order = ["m_LocalPosition", "m_LocalEulerAnglesHint", "m_LocalScale"]
         display_names = {
             "m_LocalPosition": "Position",
-            "m_LocalRotation": "Rotation",
+            "m_LocalEulerAnglesHint": "Rotation",
             "m_LocalScale": "Scale",
             "m_AnchoredPosition": "Anchored Position",
             "m_SizeDelta": "Size Delta",
@@ -858,7 +858,7 @@ class ComponentWidget(QFrame):
         # Add RectTransform properties
         if self._component.type_name == "RectTransform":
             order = ["m_AnchoredPosition", "m_SizeDelta", "m_AnchorMin", "m_AnchorMax", "m_Pivot",
-                     "m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+                     "m_LocalPosition", "m_LocalEulerAnglesHint", "m_LocalScale"]
 
         props_by_name = {p.name: p for p in props}
 
