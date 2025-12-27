@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl, QTimer
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
@@ -424,8 +424,9 @@ class DiffView(QWidget):
                 self._inspector.set_document(self._right_doc)
                 self._inspector.set_game_object(data, other_obj)
                 # If it was a component reference, scroll to that component
+                # Use QTimer.singleShot to defer scrolling until after layout is complete
                 if is_component_ref:
-                    self._inspector.scroll_to_component(file_id)
+                    QTimer.singleShot(0, lambda fid=file_id: self._inspector.scroll_to_component(fid))
             return
 
         # If not found in right, try left tree
@@ -443,8 +444,9 @@ class DiffView(QWidget):
                 self._inspector.set_document(self._left_doc)
                 self._inspector.set_game_object(data, other_obj)
                 # If it was a component reference, scroll to that component
+                # Use QTimer.singleShot to defer scrolling until after layout is complete
                 if is_component_ref:
-                    self._inspector.scroll_to_component(file_id)
+                    QTimer.singleShot(0, lambda fid=file_id: self._inspector.scroll_to_component(fid))
 
     def _on_external_reference_clicked(self, guid: str) -> None:
         """Handle external reference click - open file explorer to show the asset."""
