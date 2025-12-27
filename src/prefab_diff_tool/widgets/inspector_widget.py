@@ -437,17 +437,15 @@ class ReferenceFieldWidget(QWidget):
             if go:
                 return f"{go.name} (GameObject)"
 
-            # Check if it's a Component
+            # Check if it's a Component - use O(1) reverse lookup
             comp = self._document.all_components.get(file_id_str)
             if comp:
-                # Find the owner GameObject
-                for obj in self._document.all_objects.values():
-                    for c in obj.components:
-                        if c.file_id == file_id_str:
-                            comp_name = comp.script_name or comp.type_name
-                            return f"{obj.name} ({comp_name})"
-                # Component found but no owner
+                # Use get_component_owner for O(1) lookup instead of O(n×m) iteration
+                owner = self._document.get_component_owner(file_id_str)
                 comp_name = comp.script_name or comp.type_name
+                if owner:
+                    return f"{owner.name} ({comp_name})"
+                # Component found but no owner
                 return f"({comp_name})"
 
         # Fallback
@@ -617,6 +615,10 @@ class ComponentWidget(QFrame):
     Shows component header with expand/collapse button and property list.
     Supports Normal mode (Unity Inspector style) and Debug mode (all properties).
     """
+
+    # Signals for reference navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid
 
     def __init__(
         self,
@@ -821,6 +823,9 @@ class ComponentWidget(QFrame):
                         document=self._document,
                         guid_resolver=self._guid_resolver,
                     )
+                    # Forward reference signals to ComponentWidget
+                    row.reference_clicked.connect(self.reference_clicked)
+                    row.external_reference_clicked.connect(self.external_reference_clicked)
                     self._properties_layout.addWidget(row)
                     self._property_widgets.append(row)
 
@@ -1229,6 +1234,9 @@ class InspectorWidget(QScrollArea):
                 document=self._document,
                 guid_resolver=self._guid_resolver,
             )
+            # Forward reference signals to InspectorWidget
+            widget.reference_clicked.connect(self.reference_clicked)
+            widget.external_reference_clicked.connect(self.external_reference_clicked)
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
