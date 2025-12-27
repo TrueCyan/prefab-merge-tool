@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QToolButton,
     QLineEdit,
+    QPushButton,
+    QMenu,
 )
 
 from prefab_diff_tool.core.unity_model import (
@@ -32,8 +34,8 @@ from prefab_diff_tool.utils.naming import (
 )
 
 
-# Properties to skip (internal Unity properties)
-SKIP_PROPERTIES = {
+# Properties to skip in Normal mode (internal Unity properties)
+SKIP_PROPERTIES_NORMAL = {
     "m_ObjectHideFlags",
     "m_CorrespondingSourceObject",
     "m_PrefabInstance",
@@ -41,6 +43,38 @@ SKIP_PROPERTIES = {
     "serializedVersion",
     "m_EditorHideFlags",
     "m_EditorClassIdentifier",
+    "m_GameObject",  # Reference to parent GameObject - not shown in Unity Inspector
+}
+
+# Additional properties to skip for Transform components in Normal mode
+TRANSFORM_SKIP_PROPERTIES = {
+    "m_Father",  # Hierarchy info - shown in Hierarchy panel
+    "m_Children",  # Hierarchy info - shown in Hierarchy panel
+    "m_RootOrder",  # Internal ordering
+    "m_ConstrainProportionsScale",  # Shown as chain button instead
+    "m_LocalEulerAnglesHint",  # Euler hint (redundant with rotation)
+}
+
+# Properties to display for Transform in Normal mode (Unity Inspector style)
+TRANSFORM_DISPLAY_PROPERTIES = {
+    "m_LocalPosition",
+    "m_LocalRotation",
+    "m_LocalScale",
+}
+
+# RectTransform additional properties
+RECT_TRANSFORM_DISPLAY_PROPERTIES = {
+    "m_AnchoredPosition",
+    "m_SizeDelta",
+    "m_Pivot",
+    "m_AnchorMin",
+    "m_AnchorMax",
+    "m_AnchoredPosition3D",
+}
+
+# Properties to skip in Debug mode (minimal filtering)
+SKIP_PROPERTIES_DEBUG = {
+    "serializedVersion",
 }
 
 
@@ -162,7 +196,7 @@ class VectorFieldWidget(QWidget):
     ) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 1, 0, 1)
-        layout.setSpacing(8)
+        layout.setSpacing(4)
 
         components = ["x", "y", "z", "w"]
         labels = ["X", "Y", "Z", "W"]
@@ -174,7 +208,70 @@ class VectorFieldWidget(QWidget):
 
             # Component label
             comp_label = QLabel(label)
-            comp_label.setFixedWidth(12)
+            comp_label.setFixedWidth(14)
+            comp_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+            layout.addWidget(comp_label)
+
+            # Value - use stretch factor for equal distribution
+            val_str = _format_float(value[comp]) if isinstance(value[comp], (int, float)) else str(value[comp])
+            val_field = QLineEdit(val_str)
+            val_field.setReadOnly(True)
+            val_field.setFrame(False)
+
+            # Check if this specific component changed
+            comp_modified = is_modified and old_value and old_value.get(comp) != value.get(comp)
+
+            if comp_modified:
+                val_field.setStyleSheet(
+                    f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                    f"color: {DiffColors.MODIFIED_FG.name()}; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+                )
+            else:
+                val_field.setStyleSheet(
+                    "background-color: #3c3c3c; color: #e0e0e0; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
+                )
+
+            layout.addWidget(val_field, 1)  # Equal stretch factor
+
+
+class ScaleFieldWidget(QWidget):
+    """Unity-style Scale field with X, Y, Z components and chain link button."""
+
+    def __init__(
+        self,
+        value: dict,
+        constrain_proportions: bool = False,
+        is_modified: bool = False,
+        old_value: Optional[dict] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._constrain_proportions = constrain_proportions
+        self._setup_ui(value, is_modified, old_value)
+
+    def _setup_ui(
+        self,
+        value: dict,
+        is_modified: bool,
+        old_value: Optional[dict],
+    ) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(4)
+
+        components = ["x", "y", "z"]
+        labels = ["X", "Y", "Z"]
+        colors = ["#ff6b6b", "#6bff6b", "#6b6bff"]
+
+        for comp, label, color in zip(components, labels, colors):
+            if comp not in value:
+                continue
+
+            # Component label
+            comp_label = QLabel(label)
+            comp_label.setFixedWidth(14)
             comp_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
             layout.addWidget(comp_label)
 
@@ -201,7 +298,19 @@ class VectorFieldWidget(QWidget):
 
             layout.addWidget(val_field, 1)
 
-        layout.addStretch()
+        # Chain link button for constrain proportions
+        chain_btn = QToolButton()
+        chain_btn.setFixedSize(20, 20)
+        chain_btn.setAutoRaise(True)
+        if self._constrain_proportions:
+            chain_btn.setText("🔗")
+            chain_btn.setToolTip("Constrain Proportions: On")
+            chain_btn.setStyleSheet("font-size: 12px; color: #4CAF50;")
+        else:
+            chain_btn.setText("⛓")
+            chain_btn.setToolTip("Constrain Proportions: Off")
+            chain_btn.setStyleSheet("font-size: 12px; color: #666;")
+        layout.addWidget(chain_btn)
 
 
 class ColorFieldWidget(QWidget):
@@ -279,17 +388,61 @@ class ColorFieldWidget(QWidget):
 
 
 class ReferenceFieldWidget(QWidget):
-    """Unity-style object reference field."""
+    """Unity-style object reference field with click-to-navigate support."""
+
+    # Signals for navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid (for external assets)
 
     def __init__(
         self,
         value: dict,
         is_modified: bool = False,
         old_value: Optional[dict] = None,
+        document: Optional[Any] = None,  # UnityDocument for resolving internal refs
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
+        self._value = value
+        self._document = document
         self._setup_ui(value, is_modified, old_value)
+
+    def _resolve_reference(self, value: dict) -> str:
+        """Resolve a reference to a display name like 'ObjectName (ComponentType)'."""
+        file_id = value.get("fileID", 0)
+        guid = value.get("guid", "")
+
+        if file_id == 0:
+            return "None"
+
+        # External reference (has GUID)
+        if guid:
+            # Try to get info from document if available
+            return f"External Asset ({guid[:8]}...)"
+
+        # Internal reference - try to resolve from document
+        if self._document:
+            file_id_str = str(file_id)
+            # Check if it's a GameObject
+            go = self._document.all_objects.get(file_id_str)
+            if go:
+                return f"{go.name} (GameObject)"
+
+            # Check if it's a Component
+            comp = self._document.all_components.get(file_id_str)
+            if comp:
+                # Find the owner GameObject
+                for obj in self._document.all_objects.values():
+                    for c in obj.components:
+                        if c.file_id == file_id_str:
+                            comp_name = comp.script_name or comp.type_name
+                            return f"{obj.name} ({comp_name})"
+                # Component found but no owner
+                comp_name = comp.script_name or comp.type_name
+                return f"({comp_name})"
+
+        # Fallback
+        return f"(ID: {file_id})"
 
     def _setup_ui(
         self,
@@ -301,36 +454,43 @@ class ReferenceFieldWidget(QWidget):
         layout.setContentsMargins(0, 1, 0, 1)
         layout.setSpacing(4)
 
-        # Format reference
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
+        display = self._resolve_reference(value)
 
-        if file_id == 0:
-            display = "None"
-        elif guid:
-            display = f"({guid[:8]}...)"
+        # Create clickable button for non-None references
+        if file_id != 0:
+            ref_btn = QPushButton(display)
+            ref_btn.setFlat(True)
+            ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            if is_modified:
+                ref_btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
+                    f"color: {DiffColors.MODIFIED_FG.name()}; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
+                    "text-align: left; border: none; }} "
+                    "QPushButton:hover { background-color: #4a4a4a; }"
+                )
+            else:
+                ref_btn.setStyleSheet(
+                    "QPushButton { background-color: #3c3c3c; color: #7eb8ff; "
+                    "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
+                    "text-align: left; border: none; } "
+                    "QPushButton:hover { background-color: #4a4a4a; text-decoration: underline; }"
+                )
+
+            ref_btn.clicked.connect(lambda: self._on_click(value))
+            layout.addWidget(ref_btn, 1)
         else:
-            display = f"(ID: {file_id})"
-
-        # Reference field
-        ref_field = QLineEdit(display)
-        ref_field.setReadOnly(True)
-        ref_field.setFrame(False)
-
-        if is_modified:
-            ref_field.setStyleSheet(
-                f"background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
-                f"color: {DiffColors.MODIFIED_FG.name()}; "
-                "padding: 2px 4px; border-radius: 2px; font-size: 11px;"
-            )
-        else:
-            ref_field.setStyleSheet(
-                "background-color: #3c3c3c; color: #a0a0a0; "
+            # None reference - just show label
+            ref_label = QLabel(display)
+            ref_label.setStyleSheet(
+                "background-color: #3c3c3c; color: #888; "
                 "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
                 "font-style: italic;"
             )
-
-        layout.addWidget(ref_field, 1)
+            layout.addWidget(ref_label, 1)
 
         # Old value if modified
         if is_modified and old_value is not None:
@@ -338,19 +498,8 @@ class ReferenceFieldWidget(QWidget):
             arrow.setStyleSheet("color: #666; font-size: 11px;")
             layout.addWidget(arrow)
 
-            old_file_id = old_value.get("fileID", 0)
-            old_guid = old_value.get("guid", "")
-
-            if old_file_id == 0:
-                old_display = "None"
-            elif old_guid:
-                old_display = f"({old_guid[:8]}...)"
-            else:
-                old_display = f"(ID: {old_file_id})"
-
-            old_field = QLineEdit(old_display)
-            old_field.setReadOnly(True)
-            old_field.setFrame(False)
+            old_display = self._resolve_reference(old_value)
+            old_field = QLabel(old_display)
             old_field.setStyleSheet(
                 "background-color: #2a2a2a; color: #666; "
                 "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
@@ -358,21 +507,39 @@ class ReferenceFieldWidget(QWidget):
             )
             layout.addWidget(old_field, 1)
 
+    def _on_click(self, value: dict) -> None:
+        """Handle click on reference."""
+        file_id = str(value.get("fileID", 0))
+        guid = value.get("guid", "")
+
+        if guid:
+            # External reference
+            self.external_reference_clicked.emit(guid)
+        else:
+            # Internal reference
+            self.reference_clicked.emit(file_id, guid)
+
 
 class PropertyRowWidget(QWidget):
     """A single property row with Unity-style field display."""
+
+    # Signals for reference navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid
 
     def __init__(
         self,
         prop: UnityProperty,
         other_value: Any = None,
         show_diff: bool = True,
+        document: Optional[Any] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self._prop = prop
         self._other_value = other_value
         self._show_diff = show_diff
+        self._document = document
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -398,7 +565,10 @@ class PropertyRowWidget(QWidget):
         elif _is_color_like(value):
             field = ColorFieldWidget(value, is_modified, old_value)
         elif _is_reference(value):
-            field = ReferenceFieldWidget(value, is_modified, old_value)
+            field = ReferenceFieldWidget(value, is_modified, old_value, self._document)
+            # Forward signals
+            field.reference_clicked.connect(self.reference_clicked)
+            field.external_reference_clicked.connect(self.external_reference_clicked)
         else:
             # Simple value field
             value_str = self._format_simple_value(value)
@@ -432,17 +602,22 @@ class ComponentWidget(QFrame):
     A collapsible component section similar to Unity's Inspector.
 
     Shows component header with expand/collapse button and property list.
+    Supports Normal mode (Unity Inspector style) and Debug mode (all properties).
     """
 
     def __init__(
         self,
         component: UnityComponent,
         other_component: Optional[UnityComponent] = None,
+        debug_mode: bool = False,
+        document: Optional[Any] = None,  # UnityDocument for resolving refs
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self._component = component
         self._other_component = other_component
+        self._debug_mode = debug_mode
+        self._document = document
         self._is_expanded = True
         self._property_widgets: list[QWidget] = []
         self._setup_ui()
@@ -587,39 +762,143 @@ class ComponentWidget(QFrame):
         return badges.get(status, "")
 
     def _populate_properties(self) -> None:
-        """Populate the properties list."""
+        """Populate the properties list based on Normal/Debug mode."""
         other_props = {}
         if self._other_component:
             other_props = {p.path: p for p in self._other_component.properties}
 
-        # Filter out internal Unity properties
-        visible_props = [
-            p for p in self._component.properties
-            if p.name not in SKIP_PROPERTIES
-        ]
+        # Get constrain proportions value for Scale field (Transform only)
+        constrain_proportions = False
+        if self._component.type_name in ("Transform", "RectTransform"):
+            for p in self._component.properties:
+                if p.name == "m_ConstrainProportionsScale":
+                    constrain_proportions = bool(p.value)
+                    break
 
-        # Group properties by category (based on path structure)
-        grouped = self._group_properties(visible_props)
+        # Filter properties based on mode and component type
+        visible_props = self._get_visible_properties()
 
-        for group_name, props in grouped.items():
-            if group_name:
-                # Add group header
-                group_label = QLabel(group_name)
-                group_label.setStyleSheet(
-                    "color: #909090; font-size: 10px; padding: 4px 8px; "
-                    "background-color: #353535;"
-                )
-                self._properties_layout.addWidget(group_label)
+        # For Transform, use special layout (no grouping, Unity Inspector style)
+        if self._component.type_name in ("Transform", "RectTransform") and not self._debug_mode:
+            self._populate_transform_properties(visible_props, other_props, constrain_proportions)
+        else:
+            # Standard property layout with grouping
+            grouped = self._group_properties(visible_props)
 
-            for prop in props:
-                other_value = None
-                other_prop = other_props.get(prop.path)
-                if other_prop:
-                    other_value = other_prop.value
+            for group_name, props in grouped.items():
+                if group_name:
+                    # Add group header
+                    group_label = QLabel(group_name)
+                    group_label.setStyleSheet(
+                        "color: #909090; font-size: 10px; padding: 4px 8px; "
+                        "background-color: #353535;"
+                    )
+                    self._properties_layout.addWidget(group_label)
 
-                row = PropertyRowWidget(prop, other_value)
-                self._properties_layout.addWidget(row)
-                self._property_widgets.append(row)
+                for prop in props:
+                    other_value = None
+                    other_prop = other_props.get(prop.path)
+                    if other_prop:
+                        other_value = other_prop.value
+
+                    row = PropertyRowWidget(prop, other_value, document=self._document)
+                    self._properties_layout.addWidget(row)
+                    self._property_widgets.append(row)
+
+    def _get_visible_properties(self) -> list[UnityProperty]:
+        """Get list of visible properties based on mode and component type."""
+        if self._debug_mode:
+            # Debug mode: show almost everything
+            return [
+                p for p in self._component.properties
+                if p.name not in SKIP_PROPERTIES_DEBUG
+            ]
+
+        # Normal mode
+        is_transform = self._component.type_name in ("Transform", "RectTransform")
+
+        if is_transform:
+            # Transform: only show Position, Rotation, Scale
+            allowed = TRANSFORM_DISPLAY_PROPERTIES.copy()
+            if self._component.type_name == "RectTransform":
+                allowed.update(RECT_TRANSFORM_DISPLAY_PROPERTIES)
+
+            return [
+                p for p in self._component.properties
+                if p.name in allowed
+            ]
+        else:
+            # Other components: filter out internal properties
+            return [
+                p for p in self._component.properties
+                if p.name not in SKIP_PROPERTIES_NORMAL
+            ]
+
+    def _populate_transform_properties(
+        self,
+        props: list[UnityProperty],
+        other_props: dict,
+        constrain_proportions: bool,
+    ) -> None:
+        """Populate Transform properties in Unity Inspector style."""
+        # Define property order
+        order = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+        display_names = {
+            "m_LocalPosition": "Position",
+            "m_LocalRotation": "Rotation",
+            "m_LocalScale": "Scale",
+            "m_AnchoredPosition": "Anchored Position",
+            "m_SizeDelta": "Size Delta",
+            "m_Pivot": "Pivot",
+            "m_AnchorMin": "Anchor Min",
+            "m_AnchorMax": "Anchor Max",
+        }
+
+        # Add RectTransform properties
+        if self._component.type_name == "RectTransform":
+            order = ["m_AnchoredPosition", "m_SizeDelta", "m_AnchorMin", "m_AnchorMax", "m_Pivot",
+                     "m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+
+        props_by_name = {p.name: p for p in props}
+
+        for prop_name in order:
+            prop = props_by_name.get(prop_name)
+            if not prop:
+                continue
+
+            # Create row
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(16, 2, 8, 2)
+            row_layout.setSpacing(8)
+
+            # Property label
+            label_text = display_names.get(prop_name, nicify_variable_name(prop_name))
+            name_label = QLabel(label_text)
+            name_label.setFixedWidth(130)
+            name_label.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+            row_layout.addWidget(name_label)
+
+            # Get diff info
+            is_modified = prop.diff_status == DiffStatus.MODIFIED
+            old_value = prop.old_value if is_modified else None
+            value = prop.value
+
+            # Create appropriate field widget
+            if prop_name == "m_LocalScale" and _is_vector_like(value):
+                # Use ScaleFieldWidget with chain button
+                field = ScaleFieldWidget(value, constrain_proportions, is_modified, old_value)
+            elif _is_vector_like(value):
+                field = VectorFieldWidget(value, is_modified, old_value)
+            else:
+                value_str = str(value)
+                old_str = str(old_value) if old_value else None
+                field = FieldWidget("", value_str, is_modified, old_str)
+
+            row_layout.addWidget(field, 1)
+
+            self._properties_layout.addWidget(row_widget)
+            self._property_widgets.append(row_widget)
 
     def _group_properties(
         self, properties: list[UnityProperty]
@@ -733,15 +1012,20 @@ class InspectorWidget(QScrollArea):
 
     Displays a selected GameObject's components and properties in a
     scrollable, collapsible view similar to Unity's Inspector.
+    Supports Normal and Debug modes like Unity's Inspector.
     """
 
     property_selected = Signal(str)  # Emitted when a property is clicked
+    reference_clicked = Signal(str, str)  # file_id, guid - for internal navigation
+    external_reference_clicked = Signal(str)  # guid - for external asset navigation
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._game_object: Optional[UnityGameObject] = None
         self._other_object: Optional[UnityGameObject] = None  # For comparison
+        self._document: Optional[Any] = None  # UnityDocument for resolving references
         self._component_widgets: list[ComponentWidget] = []
+        self._debug_mode = False  # Normal mode by default
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -756,6 +1040,16 @@ class InspectorWidget(QScrollArea):
         """
         )
 
+        # Main container
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Mode selector header
+        self._mode_header = self._create_mode_header()
+        main_layout.addWidget(self._mode_header)
+
         # Content widget
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
@@ -769,7 +1063,67 @@ class InspectorWidget(QScrollArea):
         self._placeholder.setStyleSheet("color: #666; font-size: 12px; padding: 40px;")
         self._content_layout.addWidget(self._placeholder)
 
-        self.setWidget(self._content)
+        main_layout.addWidget(self._content, 1)
+        self.setWidget(main_widget)
+
+    def _create_mode_header(self) -> QWidget:
+        """Create the mode selector header (Normal/Debug toggle)."""
+        header = QWidget()
+        header.setStyleSheet("background-color: #353535; border-bottom: 1px solid #444;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setSpacing(4)
+
+        header_layout.addStretch()
+
+        # Mode button with dropdown menu
+        self._mode_btn = QToolButton()
+        self._mode_btn.setText("Normal")
+        self._mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._mode_btn.setStyleSheet(
+            "QToolButton { color: #aaa; font-size: 11px; padding: 2px 8px; border: none; } "
+            "QToolButton:hover { background-color: #444; } "
+            "QToolButton::menu-indicator { image: none; }"
+        )
+
+        # Create mode menu
+        mode_menu = QMenu(self._mode_btn)
+        mode_menu.setStyleSheet(
+            "QMenu { background-color: #3c3c3c; color: #ddd; border: 1px solid #555; } "
+            "QMenu::item:selected { background-color: #505050; }"
+        )
+
+        normal_action = mode_menu.addAction("Normal")
+        normal_action.setCheckable(True)
+        normal_action.setChecked(True)
+        normal_action.triggered.connect(lambda: self._set_mode(False))
+
+        debug_action = mode_menu.addAction("Debug")
+        debug_action.setCheckable(True)
+        debug_action.triggered.connect(lambda: self._set_mode(True))
+
+        self._normal_action = normal_action
+        self._debug_action = debug_action
+        self._mode_btn.setMenu(mode_menu)
+
+        header_layout.addWidget(self._mode_btn)
+
+        return header
+
+    def _set_mode(self, debug: bool) -> None:
+        """Set inspector mode (Normal or Debug)."""
+        if self._debug_mode == debug:
+            return
+
+        self._debug_mode = debug
+        self._mode_btn.setText("Debug" if debug else "Normal")
+        self._normal_action.setChecked(not debug)
+        self._debug_action.setChecked(debug)
+        self._refresh()
+
+    def set_document(self, document: Optional[Any]) -> None:
+        """Set the Unity document for resolving references."""
+        self._document = document
 
     def set_game_object(
         self,
@@ -802,7 +1156,12 @@ class InspectorWidget(QScrollArea):
         self._clear()
 
         if component:
-            widget = ComponentWidget(component, other_component)
+            widget = ComponentWidget(
+                component,
+                other_component,
+                debug_mode=self._debug_mode,
+                document=self._document,
+            )
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
@@ -836,7 +1195,12 @@ class InspectorWidget(QScrollArea):
         # Add component widgets
         for component in self._game_object.components:
             other_comp = other_components.get(component.file_id)
-            widget = ComponentWidget(component, other_comp)
+            widget = ComponentWidget(
+                component,
+                other_comp,
+                debug_mode=self._debug_mode,
+                document=self._document,
+            )
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
