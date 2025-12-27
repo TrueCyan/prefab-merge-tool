@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from prefab_diff_tool import __version__
 from prefab_diff_tool.widgets.diff_view import DiffView
 from prefab_diff_tool.widgets.merge_view import MergeView
 
@@ -439,7 +440,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "prefab-diff-tool 정보",
-            "<h3>prefab-diff-tool v0.1.0</h3>"
+            f"<h3>prefab-diff-tool v{__version__}</h3>"
             "<p>Unity 프리팹 파일을 위한 시각적 Diff/Merge 도구</p>"
             "<p>License: MIT</p>"
             "<p><a href='https://github.com/TrueCyan/prefab-diff-tool'>GitHub</a></p>",
