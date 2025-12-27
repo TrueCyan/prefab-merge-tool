@@ -4,6 +4,7 @@ Unity file loader using unityflow.
 Converts Unity YAML files to our internal UnityDocument model.
 """
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +16,45 @@ from prefab_diff_tool.core.unity_model import (
     UnityComponent,
     UnityProperty,
 )
+
+
+# Additional Unity class IDs not in unityflow's mapping
+# Reference: https://docs.unity3d.com/Manual/ClassIDReference.html
+ADDITIONAL_CLASS_IDS = {
+    50: "Rigidbody2D",
+    55: "PhysicsManager",
+    57: "Joint2D",
+    119: "LightProbes",
+    127: "LevelGameManager",
+    129: "LandscapeProxy",
+    131: "UnityAnalyticsManager",
+    150: "PreloadData",
+    156: "TerrainData",
+    157: "LightmapSettings",
+    171: "SampleClip",
+    194: "TerrainData",
+    218: "Terrain",
+    226: "BillboardAsset",
+    238: "NavMeshData",
+    319: "AvatarMask",
+    328: "VideoPlayer",
+    329: "VideoClip",
+    363: "OcclusionCullingData",
+    1101: "PrefabInstance",
+    1102: "PrefabModification",
+}
+
+# Pattern to match "Unknown(ID)" format
+UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
+
+
+def resolve_class_name(class_name: str) -> str:
+    """Resolve class name, handling Unknown(ID) format."""
+    match = UNKNOWN_PATTERN.match(class_name)
+    if match:
+        class_id = int(match.group(1))
+        return ADDITIONAL_CLASS_IDS.get(class_id, class_name)
+    return class_name
 
 
 class UnityFileLoader:
@@ -67,7 +107,9 @@ class UnityFileLoader:
 
         for entry in self._raw_doc.objects:
             file_id = str(getattr(entry, "file_id", ""))
-            class_name = getattr(entry, "class_name", "Unknown")
+            raw_class_name = getattr(entry, "class_name", "Unknown")
+            # Resolve Unknown(ID) patterns to actual class names
+            class_name = resolve_class_name(raw_class_name)
 
             if class_name == "GameObject":
                 go = self._parse_game_object(entry, file_id)
@@ -219,7 +261,8 @@ class UnityFileLoader:
                 if go_id in game_objects:
                     game_objects[go_id].components.append(comp)
 
-        # Second pass: build Transform hierarchy
+        # Second pass: build Transform hierarchy using m_Father only
+        # (Using m_Father is sufficient and avoids duplicate children)
         for go_id, go in game_objects.items():
             transform = go.get_transform()
             if not transform:
@@ -232,7 +275,7 @@ class UnityFileLoader:
 
             transform_data = self._get_entry_data(transform_entry)
 
-            # Get parent transform
+            # Get parent transform via m_Father
             father_ref = transform_data.get("m_Father")
             if father_ref and isinstance(father_ref, dict):
                 father_id = str(father_ref.get("fileID", ""))
@@ -241,22 +284,9 @@ class UnityFileLoader:
                     parent_go = self._find_go_by_transform(
                         game_objects, father_id
                     )
-                    if parent_go:
+                    if parent_go and go not in parent_go.children:
                         go.parent = parent_go
                         parent_go.children.append(go)
-
-            # Get children from m_Children list
-            children_refs = transform_data.get("m_Children", [])
-            if isinstance(children_refs, list):
-                for child_ref in children_refs:
-                    if isinstance(child_ref, dict):
-                        child_transform_id = str(child_ref.get("fileID", ""))
-                        child_go = self._find_go_by_transform(
-                            game_objects, child_transform_id
-                        )
-                        if child_go and child_go not in go.children:
-                            child_go.parent = go
-                            go.children.append(child_go)
 
         # Sort children by name for consistent ordering
         for go in game_objects.values():
