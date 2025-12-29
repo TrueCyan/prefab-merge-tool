@@ -8,28 +8,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QUrl, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QSplitter,
     QLabel,
+    QSplitter,
+    QStackedWidget,
     QTreeView,
+    QVBoxLayout,
+    QWidget,
 )
 
 from prefab_diff_tool.core.unity_model import (
+    Change,
+    DiffResult,
+    DiffStatus,
+    DiffSummary,
     UnityDocument,
     UnityGameObject,
-    DiffStatus,
-    DiffResult,
-    DiffSummary,
-    Change,
 )
-from prefab_diff_tool.core.loader import load_unity_file
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
-from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
+from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
+from prefab_diff_tool.widgets.loading_widget import (
+    FileLoadingWorker,
+    LoadingProgressWidget,
+)
 
 
 @dataclass
@@ -52,6 +56,8 @@ class DiffView(QWidget):
     """
 
     change_selected = Signal(str)
+    loading_started = Signal()
+    loading_finished = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -68,6 +74,9 @@ class DiffView(QWidget):
         self._left_model = HierarchyTreeModel()
         self._right_model = HierarchyTreeModel()
 
+        # Loading worker
+        self._loading_worker: Optional[FileLoadingWorker] = None
+
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -75,9 +84,23 @@ class DiffView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Stacked widget for loading/content switching
+        self._stack = QStackedWidget()
+        layout.addWidget(self._stack)
+
+        # Loading page
+        self._loading_widget = LoadingProgressWidget()
+        self._loading_widget.set_title("Loading files...")
+        self._stack.addWidget(self._loading_widget)
+
+        # Content page
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
         # Main splitter
         splitter = QSplitter()
-        layout.addWidget(splitter)
+        content_layout.addWidget(splitter)
 
         # Left side: Two hierarchy trees side-by-side
         hierarchy_container = QWidget()
@@ -152,38 +175,94 @@ class DiffView(QWidget):
         # Set initial splitter sizes (40% tree, 60% inspector)
         splitter.setSizes([400, 600])
 
+        # Add content widget to stack
+        self._stack.addWidget(content_widget)
+
+        # Show content by default
+        self._stack.setCurrentIndex(1)
+
     def load_diff(self, left: Path, right: Path) -> None:
-        """Load and compare two files."""
+        """Load and compare two files asynchronously."""
         self._left_path = left
         self._right_path = right
 
         self._left_label.setText(f"왼쪽: {left.name}")
         self._right_label.setText(f"오른쪽: {right.name}")
 
+        # Show loading screen
+        self._loading_widget.set_title("Loading files...")
+        self._loading_widget.update_progress(0, 3, "Preparing to load...")
+        self._stack.setCurrentIndex(0)
+        self.loading_started.emit()
+
+        # Cancel any existing worker
+        if self._loading_worker and self._loading_worker.isRunning():
+            self._loading_worker.cancel()
+            self._loading_worker.wait()
+
+        # Start async loading
+        self._loading_worker = FileLoadingWorker([left, right])
+        self._loading_worker.progress.connect(self._on_loading_progress)
+        self._loading_worker.file_loaded.connect(self._on_file_loaded)
+        self._loading_worker.indexing_started.connect(self._on_indexing_started)
+        self._loading_worker.finished.connect(self._on_loading_finished)
+        self._loading_worker.error.connect(self._on_loading_error)
+        self._loading_worker.start()
+
+    def _on_loading_progress(self, current: int, total: int, message: str) -> None:
+        """Handle loading progress updates."""
+        self._loading_widget.update_progress(current, total, message)
+
+    def _on_file_loaded(self, doc: UnityDocument, index: int) -> None:
+        """Handle individual file loaded."""
+        if index == 0:
+            self._left_doc = doc
+        elif index == 1:
+            self._right_doc = doc
+
+    def _on_indexing_started(self) -> None:
+        """Handle indexing phase start."""
+        self._loading_widget.set_title("Indexing assets...")
+
+    def _on_loading_finished(self) -> None:
+        """Handle loading completion."""
         try:
-            self._left_doc = load_unity_file(left)
-            self._right_doc = load_unity_file(right)
+            # Get GUID resolver from worker
+            if self._loading_worker:
+                self._guid_resolver = self._loading_worker.get_guid_resolver()
 
-            # Setup GUID resolver for external reference navigation
-            if self._right_doc and self._right_doc.project_root:
-                self._guid_resolver = GuidResolver()
-                self._guid_resolver.set_project_root(Path(self._right_doc.project_root))
-
+            # Perform diff
             self._perform_diff()
 
+            # Update UI
             self._left_model.set_document(self._left_doc)
             self._right_model.set_document(self._right_doc)
 
             # Set document for Inspector to resolve internal references
             self._inspector.set_document(self._right_doc)
 
+            # Expand all trees
             self._left_tree.expandAll()
             self._right_tree.expandAll()
 
+            # Switch to content view
+            self._stack.setCurrentIndex(1)
+            self.loading_finished.emit()
+
         except Exception as e:
-            print(f"Error loading diff: {e}")
+            print(f"Error finalizing diff: {e}")
             import traceback
             traceback.print_exc()
+            self._stack.setCurrentIndex(1)
+            self.loading_finished.emit()
+
+    def _on_loading_error(self, error: str) -> None:
+        """Handle loading error."""
+        print(f"Error loading diff: {error}")
+        self._loading_widget.update_progress(0, 1, f"Error: {error}")
+        # Switch to content view after a delay
+        QTimer.singleShot(2000, lambda: self._stack.setCurrentIndex(1))
+        self.loading_finished.emit()
 
     def _perform_diff(self) -> None:
         """Perform diff between left and right documents."""

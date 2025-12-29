@@ -5,37 +5,40 @@
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QSplitter,
-    QLabel,
-    QTreeView,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QPushButton,
-    QFrame,
     QAbstractItemView,
     QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QSplitter,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtGui import QColor, QBrush
 
 from prefab_diff_tool.core.unity_model import (
-    UnityDocument,
-    UnityGameObject,
-    UnityComponent,
+    ConflictResolution,
     DiffStatus,
     MergeConflict,
     MergeResult,
-    ConflictResolution,
+    UnityComponent,
+    UnityDocument,
+    UnityGameObject,
 )
-from prefab_diff_tool.core.loader import load_unity_file
-from prefab_diff_tool.core.writer import MergeResultWriter, perform_text_merge
+from prefab_diff_tool.core.writer import perform_text_merge
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
-from prefab_diff_tool.utils.colors import DiffColors
+from prefab_diff_tool.widgets.loading_widget import (
+    FileLoadingWorker,
+    LoadingProgressWidget,
+)
 
 
 class MergeView(QWidget):
@@ -52,6 +55,8 @@ class MergeView(QWidget):
 
     # Signals
     conflict_resolved = Signal(int)  # Emits remaining conflict count
+    loading_started = Signal()
+    loading_finished = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -75,6 +80,9 @@ class MergeView(QWidget):
         self._theirs_model = HierarchyTreeModel()
         self._result_model = HierarchyTreeModel()
 
+        # Loading worker
+        self._loading_worker: Optional[FileLoadingWorker] = None
+
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -82,10 +90,24 @@ class MergeView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Stacked widget for loading/content switching
+        self._stack = QStackedWidget()
+        layout.addWidget(self._stack)
+
+        # Loading page
+        self._loading_widget = LoadingProgressWidget()
+        self._loading_widget.set_title("Loading files...")
+        self._stack.addWidget(self._loading_widget)
+
+        # Content page
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
         # Main vertical splitter
         main_splitter = QSplitter()
         main_splitter.setOrientation(Qt.Orientation.Vertical)
-        layout.addWidget(main_splitter)
+        content_layout.addWidget(main_splitter)
 
         # Top: 3-way comparison
         top_widget = QWidget()
@@ -175,6 +197,12 @@ class MergeView(QWidget):
         # Set initial sizes (60% top, 40% bottom)
         main_splitter.setSizes([600, 400])
 
+        # Add content widget to stack
+        self._stack.addWidget(content_widget)
+
+        # Show content by default
+        self._stack.setCurrentIndex(1)
+
     def _create_panel(self, title: str) -> tuple[QFrame, QTreeView]:
         """Create a panel for BASE/OURS/THEIRS."""
         frame = QFrame()
@@ -194,17 +222,51 @@ class MergeView(QWidget):
         return frame, tree
 
     def load_merge(self, base: Path, ours: Path, theirs: Path) -> None:
-        """Load files for 3-way merge."""
+        """Load files for 3-way merge asynchronously."""
         self._base_path = base
         self._ours_path = ours
         self._theirs_path = theirs
 
-        try:
-            # Load all three files
-            self._base_doc = load_unity_file(base)
-            self._ours_doc = load_unity_file(ours)
-            self._theirs_doc = load_unity_file(theirs)
+        # Show loading screen
+        self._loading_widget.set_title("Loading files...")
+        self._loading_widget.update_progress(0, 4, "Preparing to load...")
+        self._stack.setCurrentIndex(0)
+        self.loading_started.emit()
 
+        # Cancel any existing worker
+        if self._loading_worker and self._loading_worker.isRunning():
+            self._loading_worker.cancel()
+            self._loading_worker.wait()
+
+        # Start async loading
+        self._loading_worker = FileLoadingWorker([base, ours, theirs])
+        self._loading_worker.progress.connect(self._on_loading_progress)
+        self._loading_worker.file_loaded.connect(self._on_file_loaded)
+        self._loading_worker.indexing_started.connect(self._on_indexing_started)
+        self._loading_worker.finished.connect(self._on_loading_finished)
+        self._loading_worker.error.connect(self._on_loading_error)
+        self._loading_worker.start()
+
+    def _on_loading_progress(self, current: int, total: int, message: str) -> None:
+        """Handle loading progress updates."""
+        self._loading_widget.update_progress(current, total, message)
+
+    def _on_file_loaded(self, doc: UnityDocument, index: int) -> None:
+        """Handle individual file loaded."""
+        if index == 0:
+            self._base_doc = doc
+        elif index == 1:
+            self._ours_doc = doc
+        elif index == 2:
+            self._theirs_doc = doc
+
+    def _on_indexing_started(self) -> None:
+        """Handle indexing phase start."""
+        self._loading_widget.set_title("Indexing assets...")
+
+    def _on_loading_finished(self) -> None:
+        """Handle loading completion."""
+        try:
             # Perform 3-way merge
             self._perform_merge()
 
@@ -221,10 +283,24 @@ class MergeView(QWidget):
             # Update conflict table
             self._update_conflict_table()
 
+            # Switch to content view
+            self._stack.setCurrentIndex(1)
+            self.loading_finished.emit()
+
         except Exception as e:
-            print(f"Error loading merge: {e}")
+            print(f"Error finalizing merge: {e}")
             import traceback
             traceback.print_exc()
+            self._stack.setCurrentIndex(1)
+            self.loading_finished.emit()
+
+    def _on_loading_error(self, error: str) -> None:
+        """Handle loading error."""
+        print(f"Error loading merge: {error}")
+        self._loading_widget.update_progress(0, 1, f"Error: {error}")
+        # Switch to content view after a delay
+        QTimer.singleShot(2000, lambda: self._stack.setCurrentIndex(1))
+        self.loading_finished.emit()
 
     def _perform_merge(self) -> None:
         """Perform 3-way merge and identify conflicts."""

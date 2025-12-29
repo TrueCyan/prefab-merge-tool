@@ -4,9 +4,14 @@ Unity GUID resolver for finding asset names from GUIDs.
 Searches Unity project .meta files to resolve GUIDs to actual asset names.
 """
 
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+# Progress callback type: (current, total, message) -> None
+ProgressCallback = Callable[[int, int, str], None]
 
 
 class GuidResolver:
@@ -85,57 +90,147 @@ class GuidResolver:
             self._indexed = False
             self._auto_index = auto_index
 
-    def index_project(self) -> None:
+    def index_project(
+        self,
+        progress_callback: Optional[ProgressCallback] = None,
+        max_workers: Optional[int] = None,
+    ) -> None:
         """
         Index all .meta files in the project for fast GUID lookup.
 
         Call this once after setting project root for better performance
         when resolving many GUIDs.
+
+        Args:
+            progress_callback: Optional callback for progress updates.
+                              Called with (current, total, message).
+            max_workers: Max threads for parallel processing.
+                        Defaults to min(32, cpu_count + 4).
         """
         if not self._project_root or self._indexed:
+            if progress_callback:
+                progress_callback(1, 1, "Already indexed")
             return
 
         assets_path = self._project_root / "Assets"
         if not assets_path.exists():
+            if progress_callback:
+                progress_callback(1, 1, "No Assets folder")
             return
 
-        # Also search Packages folder for package assets
+        # Collect all .meta file paths first (fast operation)
+        if progress_callback:
+            progress_callback(0, 0, "Scanning for .meta files...")
+
+        meta_files: list[Path] = []
         search_paths = [assets_path]
         packages_path = self._project_root / "Packages"
         if packages_path.exists():
             search_paths.append(packages_path)
 
         for search_path in search_paths:
-            for meta_file in search_path.rglob("*.meta"):
-                try:
-                    guid = self._extract_guid_from_meta(meta_file)
-                    if guid:
-                        # Get asset path (without .meta extension)
-                        asset_path = meta_file.with_suffix("")
-                        asset_name = asset_path.stem
+            # Use os.walk for faster directory traversal
+            for root, _, files in os.walk(search_path):
+                for filename in files:
+                    if filename.endswith(".meta"):
+                        meta_files.append(Path(root) / filename)
 
-                        # Include extension for non-script assets
-                        if asset_path.suffix and asset_path.suffix != ".cs":
-                            asset_name = asset_path.name
+        total = len(meta_files)
+        if total == 0:
+            self._indexed = True
+            if progress_callback:
+                progress_callback(1, 1, "No .meta files found")
+            return
 
-                        self._cache[guid] = asset_name
-                        self._path_cache[guid] = asset_path
-                except (OSError, IOError):
-                    continue
+        if progress_callback:
+            progress_callback(0, total, f"Indexing {total} assets...")
+
+        # Use parallel processing for file I/O
+        if max_workers is None:
+            max_workers = min(32, (os.cpu_count() or 1) + 4)
+
+        processed = 0
+        batch_size = max(1, total // 100)  # Update progress ~100 times
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_path = {
+                executor.submit(self._process_meta_file, meta_file): meta_file
+                for meta_file in meta_files
+            }
+
+            # Process results as they complete
+            for future in as_completed(future_to_path):
+                result = future.result()
+                if result:
+                    guid, asset_name, asset_path = result
+                    self._cache[guid] = asset_name
+                    self._path_cache[guid] = asset_path
+
+                processed += 1
+
+                # Periodic progress callback
+                if progress_callback and processed % batch_size == 0:
+                    progress_callback(processed, total, f"Indexed {processed}/{total} assets")
 
         self._indexed = True
+
+        if progress_callback:
+            progress_callback(total, total, f"Indexing complete: {len(self._cache)} assets")
+
+    def _process_meta_file(self, meta_file: Path) -> Optional[tuple[str, str, Path]]:
+        """Process a single .meta file and return (guid, asset_name, asset_path) or None."""
+        try:
+            guid = self._extract_guid_from_meta(meta_file)
+            if guid:
+                asset_path = meta_file.with_suffix("")
+                asset_name = asset_path.stem
+
+                # Include extension for non-script assets
+                if asset_path.suffix and asset_path.suffix != ".cs":
+                    asset_name = asset_path.name
+
+                return (guid, asset_name, asset_path)
+        except OSError:
+            pass
+        return None
+
+    def get_meta_file_count(self) -> Optional[int]:
+        """
+        Get estimated count of .meta files in the project.
+        Returns None if project root is not set.
+        """
+        if not self._project_root:
+            return None
+
+        count = 0
+        assets_path = self._project_root / "Assets"
+        if assets_path.exists():
+            for root, _, files in os.walk(assets_path):
+                count += sum(1 for f in files if f.endswith(".meta"))
+
+        packages_path = self._project_root / "Packages"
+        if packages_path.exists():
+            for root, _, files in os.walk(packages_path):
+                count += sum(1 for f in files if f.endswith(".meta"))
+
+        return count
+
+    def is_indexed(self) -> bool:
+        """Check if the project has been indexed."""
+        return self._indexed
 
     def _extract_guid_from_meta(self, meta_path: Path) -> Optional[str]:
         """Extract GUID from a .meta file."""
         try:
             # Only read first few lines - GUID is always near the top
-            with open(meta_path, "r", encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 content = f.read(500)  # GUID is in first ~100 bytes typically
 
             match = self.GUID_PATTERN.search(content)
             if match:
                 return match.group(1).lower()
-        except (OSError, IOError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError):
             pass
         return None
 
@@ -202,7 +297,7 @@ class GuidResolver:
                             asset_name = asset_path.name
 
                         return asset_name
-                except (OSError, IOError):
+                except OSError:
                     continue
 
         return None
