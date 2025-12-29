@@ -58,12 +58,13 @@ class MergeView(QWidget):
     loading_started = Signal()
     loading_finished = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, unity_root: Optional[Path] = None):
         super().__init__(parent)
 
         self._base_path: Optional[Path] = None
         self._ours_path: Optional[Path] = None
         self._theirs_path: Optional[Path] = None
+        self._unity_root: Optional[Path] = unity_root
 
         self._base_doc: Optional[UnityDocument] = None
         self._ours_doc: Optional[UnityDocument] = None
@@ -705,3 +706,36 @@ class MergeView(QWidget):
         self._base_tree.collapseAll()
         self._ours_tree.collapseAll()
         self._theirs_tree.collapseAll()
+
+    def accept_all_ours(self) -> None:
+        """Public method to accept all ours - called from toolbar."""
+        self._on_accept_all_ours()
+
+    def accept_all_theirs(self) -> None:
+        """Public method to accept all theirs - called from toolbar."""
+        self._on_accept_all_theirs()
+
+    def goto_next_unresolved_conflict(self) -> None:
+        """Navigate to next unresolved conflict."""
+        if not self._conflicts:
+            return
+
+        # Find next unresolved conflict starting from current
+        start = (self._current_conflict_index + 1) % len(self._conflicts)
+        for i in range(len(self._conflicts)):
+            idx = (start + i) % len(self._conflicts)
+            if not self._conflicts[idx].is_resolved:
+                self._current_conflict_index = idx
+                self._conflict_table.selectRow(idx)
+                return
+
+        # If all resolved, just go to next
+        self._on_next_conflict()
+
+    def goto_next_change(self) -> None:
+        """Navigate to next change (alias for goto_next_conflict for toolbar consistency)."""
+        self._on_next_conflict()
+
+    def goto_prev_change(self) -> None:
+        """Navigate to previous change (alias for goto_prev_conflict for toolbar consistency)."""
+        self._on_prev_conflict()

@@ -44,15 +44,17 @@ def run_app(
     mode: str = "empty",
     files: Optional[list[Path]] = None,
     output: Optional[Path] = None,
+    unity_root: Optional[Path] = None,
 ) -> int:
     """
     Initialize and run the application.
-    
+
     Args:
         mode: "empty", "view", "diff", or "merge"
         files: List of files to open
         output: Output file for merge mode
-    
+        unity_root: Optional Unity project root path (for GUID resolution)
+
     Returns:
         Exit code (0 for success)
     """
@@ -71,8 +73,8 @@ def run_app(
     app.setStyle("Fusion")
     
     # Create main window
-    window = MainWindow()
-    
+    window = MainWindow(unity_root=unity_root)
+
     # Handle mode
     if mode == "diff" and files and len(files) >= 2:
         window.open_diff(files[0], files[1])

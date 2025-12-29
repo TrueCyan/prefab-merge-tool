@@ -46,7 +46,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Output file for merge result",
     )
-    
+
+    parser.add_argument(
+        "--unity-root", "-u",
+        type=Path,
+        help="Unity project root path (folder containing Assets/). "
+             "If not specified, auto-detected from file location.",
+    )
+
     parser.add_argument(
         "--version", "-v",
         action="version",
@@ -96,14 +103,26 @@ def main() -> int:
     # Validate files
     if files and not validate_files(files):
         return 1
-    
+
+    # Validate unity root if provided
+    unity_root = args.unity_root
+    if unity_root:
+        if not unity_root.exists():
+            print(f"Error: Unity root path not found: {unity_root}", file=sys.stderr)
+            return 1
+        assets_path = unity_root / "Assets"
+        if not assets_path.is_dir():
+            print(f"Error: Invalid Unity project (no Assets folder): {unity_root}", file=sys.stderr)
+            return 1
+
     # Start GUI
     from prefab_diff_tool.app import run_app
-    
+
     return run_app(
         mode=mode,
         files=files,
         output=args.output,
+        unity_root=unity_root,
     )
 
 

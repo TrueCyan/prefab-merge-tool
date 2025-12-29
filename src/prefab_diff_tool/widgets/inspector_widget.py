@@ -316,6 +316,413 @@ class ScaleFieldWidget(QWidget):
         layout.addWidget(chain_btn)
 
 
+class ArrayFieldWidget(QFrame):
+    """Expandable array field widget showing all array elements."""
+
+    # Signals for reference navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid
+
+    def __init__(
+        self,
+        value: list,
+        prop_name: str = "",
+        is_modified: bool = False,
+        old_value: Optional[list] = None,
+        document: Optional[Any] = None,
+        guid_resolver: Optional["GuidResolver"] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._value = value
+        self._prop_name = prop_name
+        self._is_modified = is_modified
+        self._old_value = old_value
+        self._document = document
+        self._guid_resolver = guid_resolver
+        self._is_expanded = False
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Plain)
+        self.setStyleSheet(
+            "ArrayFieldWidget { background-color: #353535; border: 1px solid #444; border-radius: 3px; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        # Header row with expand button
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
+        # Expand button
+        self._expand_btn = QToolButton()
+        self._expand_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self._expand_btn.setAutoRaise(True)
+        self._expand_btn.setFixedSize(16, 16)
+        self._expand_btn.clicked.connect(self._toggle_expand)
+        header_layout.addWidget(self._expand_btn)
+
+        # Array info label
+        count = len(self._value)
+        label_text = f"Array [{count}]"
+        if self._is_modified and self._old_value is not None:
+            old_count = len(self._old_value)
+            if old_count != count:
+                label_text = f"Array [{count}] ← [{old_count}]"
+        self._header_label = QLabel(label_text)
+        if self._is_modified:
+            self._header_label.setStyleSheet(
+                f"color: {DiffColors.MODIFIED_FG.name()}; font-size: 11px;"
+            )
+        else:
+            self._header_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        header_layout.addWidget(self._header_label)
+        header_layout.addStretch()
+
+        layout.addWidget(header)
+
+        # Content container (hidden by default)
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(16, 4, 0, 4)
+        self._content_layout.setSpacing(2)
+        self._content.setVisible(False)
+        layout.addWidget(self._content)
+
+    def _toggle_expand(self) -> None:
+        """Toggle expanded/collapsed state."""
+        self._is_expanded = not self._is_expanded
+        self._expand_btn.setArrowType(
+            Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
+        )
+
+        if self._is_expanded and self._content_layout.count() == 0:
+            self._populate_content()
+
+        self._content.setVisible(self._is_expanded)
+
+    def _populate_content(self) -> None:
+        """Populate the array content when first expanded."""
+        for i, item in enumerate(self._value):
+            old_item = None
+            is_item_modified = False
+
+            if self._is_modified and self._old_value is not None:
+                if i < len(self._old_value):
+                    old_item = self._old_value[i]
+                    is_item_modified = item != old_item
+                else:
+                    is_item_modified = True  # New item
+
+            row = self._create_element_row(i, item, is_item_modified, old_item)
+            self._content_layout.addWidget(row)
+
+        # Show removed items from old value
+        if self._is_modified and self._old_value is not None:
+            for i in range(len(self._value), len(self._old_value)):
+                row = self._create_removed_row(i, self._old_value[i])
+                self._content_layout.addWidget(row)
+
+    def _create_element_row(
+        self, index: int, value: Any, is_modified: bool, old_value: Any
+    ) -> QWidget:
+        """Create a widget row for an array element."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 1, 0, 1)
+        row_layout.setSpacing(4)
+
+        # Index label
+        idx_label = QLabel(f"[{index}]")
+        idx_label.setFixedWidth(40)
+        idx_label.setStyleSheet("color: #888; font-size: 10px;")
+        row_layout.addWidget(idx_label)
+
+        # Value widget based on type
+        if _is_vector_like(value):
+            field = VectorFieldWidget(value, is_modified, old_value if is_modified else None)
+            row_layout.addWidget(field, 1)
+        elif _is_color_like(value):
+            field = ColorFieldWidget(value, is_modified, old_value if is_modified else None)
+            row_layout.addWidget(field, 1)
+        elif _is_reference(value):
+            field = ReferenceFieldWidget(
+                value, is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            field.reference_clicked.connect(self.reference_clicked)
+            field.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(field, 1)
+        elif isinstance(value, list):
+            # Nested array
+            nested = ArrayFieldWidget(
+                value, f"[{index}]", is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            nested.reference_clicked.connect(self.reference_clicked)
+            nested.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(nested, 1)
+        elif isinstance(value, dict):
+            # Nested dict - show as expandable
+            nested = DictFieldWidget(
+                value, f"[{index}]", is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            nested.reference_clicked.connect(self.reference_clicked)
+            nested.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(nested, 1)
+        else:
+            # Simple value
+            val_str = self._format_simple_value(value)
+            old_str = self._format_simple_value(old_value) if is_modified and old_value is not None else None
+            field = FieldWidget("", val_str, is_modified, old_str)
+            row_layout.addWidget(field, 1)
+
+        return row
+
+    def _create_removed_row(self, index: int, value: Any) -> QWidget:
+        """Create a widget row for a removed array element."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 1, 0, 1)
+        row_layout.setSpacing(4)
+
+        idx_label = QLabel(f"[{index}]")
+        idx_label.setFixedWidth(40)
+        idx_label.setStyleSheet(f"color: {DiffColors.REMOVED_FG.name()}; font-size: 10px; text-decoration: line-through;")
+        row_layout.addWidget(idx_label)
+
+        val_str = self._format_simple_value(value)
+        removed_label = QLabel(val_str)
+        removed_label.setStyleSheet(
+            f"color: {DiffColors.REMOVED_FG.name()}; font-size: 11px; text-decoration: line-through;"
+        )
+        row_layout.addWidget(removed_label, 1)
+
+        return row
+
+    def _format_simple_value(self, value: Any) -> str:
+        """Format a simple value for display."""
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "✓" if value else "✗"
+        if isinstance(value, float):
+            return _format_float(value)
+        if isinstance(value, (int, str)):
+            return str(value)
+        if isinstance(value, list):
+            return f"Array [{len(value)}]"
+        if isinstance(value, dict):
+            if _is_reference(value):
+                return f"(ref: {value.get('fileID', 0)})"
+            return "{...}"
+        return str(value)[:60]
+
+
+class DictFieldWidget(QFrame):
+    """Expandable dictionary/object field widget showing all properties."""
+
+    # Signals for reference navigation
+    reference_clicked = Signal(str, str)  # file_id, guid
+    external_reference_clicked = Signal(str)  # guid
+
+    def __init__(
+        self,
+        value: dict,
+        prop_name: str = "",
+        is_modified: bool = False,
+        old_value: Optional[dict] = None,
+        document: Optional[Any] = None,
+        guid_resolver: Optional["GuidResolver"] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._value = value
+        self._prop_name = prop_name
+        self._is_modified = is_modified
+        self._old_value = old_value
+        self._document = document
+        self._guid_resolver = guid_resolver
+        self._is_expanded = False
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Plain)
+        self.setStyleSheet(
+            "DictFieldWidget { background-color: #353535; border: 1px solid #444; border-radius: 3px; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        # Header row with expand button
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
+
+        # Expand button
+        self._expand_btn = QToolButton()
+        self._expand_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self._expand_btn.setAutoRaise(True)
+        self._expand_btn.setFixedSize(16, 16)
+        self._expand_btn.clicked.connect(self._toggle_expand)
+        header_layout.addWidget(self._expand_btn)
+
+        # Object info label
+        count = len(self._value)
+        label_text = f"Object {{{count} properties}}"
+        self._header_label = QLabel(label_text)
+        if self._is_modified:
+            self._header_label.setStyleSheet(
+                f"color: {DiffColors.MODIFIED_FG.name()}; font-size: 11px;"
+            )
+        else:
+            self._header_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        header_layout.addWidget(self._header_label)
+        header_layout.addStretch()
+
+        layout.addWidget(header)
+
+        # Content container (hidden by default)
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(16, 4, 0, 4)
+        self._content_layout.setSpacing(2)
+        self._content.setVisible(False)
+        layout.addWidget(self._content)
+
+    def _toggle_expand(self) -> None:
+        """Toggle expanded/collapsed state."""
+        self._is_expanded = not self._is_expanded
+        self._expand_btn.setArrowType(
+            Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
+        )
+
+        if self._is_expanded and self._content_layout.count() == 0:
+            self._populate_content()
+
+        self._content.setVisible(self._is_expanded)
+
+    def _populate_content(self) -> None:
+        """Populate the dict content when first expanded."""
+        old_dict = self._old_value if isinstance(self._old_value, dict) else {}
+
+        for key, item in self._value.items():
+            old_item = old_dict.get(key)
+            is_item_modified = self._is_modified and (key not in old_dict or item != old_item)
+
+            row = self._create_property_row(key, item, is_item_modified, old_item)
+            self._content_layout.addWidget(row)
+
+        # Show removed keys
+        if self._is_modified and old_dict:
+            for key in old_dict:
+                if key not in self._value:
+                    row = self._create_removed_row(key, old_dict[key])
+                    self._content_layout.addWidget(row)
+
+    def _create_property_row(
+        self, key: str, value: Any, is_modified: bool, old_value: Any
+    ) -> QWidget:
+        """Create a widget row for a dict property."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 1, 0, 1)
+        row_layout.setSpacing(4)
+
+        # Key label
+        key_label = QLabel(nicify_variable_name(key))
+        key_label.setFixedWidth(100)
+        key_label.setStyleSheet("color: #b0b0b0; font-size: 10px;")
+        row_layout.addWidget(key_label)
+
+        # Value widget based on type
+        if _is_vector_like(value):
+            field = VectorFieldWidget(value, is_modified, old_value if is_modified else None)
+            row_layout.addWidget(field, 1)
+        elif _is_color_like(value):
+            field = ColorFieldWidget(value, is_modified, old_value if is_modified else None)
+            row_layout.addWidget(field, 1)
+        elif _is_reference(value):
+            field = ReferenceFieldWidget(
+                value, is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            field.reference_clicked.connect(self.reference_clicked)
+            field.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(field, 1)
+        elif isinstance(value, list):
+            nested = ArrayFieldWidget(
+                value, key, is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            nested.reference_clicked.connect(self.reference_clicked)
+            nested.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(nested, 1)
+        elif isinstance(value, dict):
+            nested = DictFieldWidget(
+                value, key, is_modified, old_value if is_modified else None,
+                self._document, self._guid_resolver
+            )
+            nested.reference_clicked.connect(self.reference_clicked)
+            nested.external_reference_clicked.connect(self.external_reference_clicked)
+            row_layout.addWidget(nested, 1)
+        else:
+            val_str = self._format_simple_value(value)
+            old_str = self._format_simple_value(old_value) if is_modified and old_value is not None else None
+            field = FieldWidget("", val_str, is_modified, old_str)
+            row_layout.addWidget(field, 1)
+
+        return row
+
+    def _create_removed_row(self, key: str, value: Any) -> QWidget:
+        """Create a widget row for a removed property."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 1, 0, 1)
+        row_layout.setSpacing(4)
+
+        key_label = QLabel(nicify_variable_name(key))
+        key_label.setFixedWidth(100)
+        key_label.setStyleSheet(f"color: {DiffColors.REMOVED_FG.name()}; font-size: 10px; text-decoration: line-through;")
+        row_layout.addWidget(key_label)
+
+        val_str = self._format_simple_value(value)
+        removed_label = QLabel(val_str)
+        removed_label.setStyleSheet(
+            f"color: {DiffColors.REMOVED_FG.name()}; font-size: 11px; text-decoration: line-through;"
+        )
+        row_layout.addWidget(removed_label, 1)
+
+        return row
+
+    def _format_simple_value(self, value: Any) -> str:
+        """Format a simple value for display."""
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "✓" if value else "✗"
+        if isinstance(value, float):
+            return _format_float(value)
+        if isinstance(value, (int, str)):
+            return str(value)
+        if isinstance(value, list):
+            return f"Array [{len(value)}]"
+        if isinstance(value, dict):
+            if _is_reference(value):
+                return f"(ref: {value.get('fileID', 0)})"
+            return "{...}"
+        return str(value)[:60]
+
+
 class ColorFieldWidget(QWidget):
     """Unity-style Color field with R, G, B, A components and color preview."""
 
@@ -581,6 +988,22 @@ class PropertyRowWidget(QWidget):
             # Forward signals
             field.reference_clicked.connect(self.reference_clicked)
             field.external_reference_clicked.connect(self.external_reference_clicked)
+        elif isinstance(value, list):
+            # Expandable array field
+            field = ArrayFieldWidget(
+                value, self._prop.name, is_modified, old_value,
+                self._document, self._guid_resolver
+            )
+            field.reference_clicked.connect(self.reference_clicked)
+            field.external_reference_clicked.connect(self.external_reference_clicked)
+        elif isinstance(value, dict):
+            # Expandable dict field (non-vector/color/reference dicts)
+            field = DictFieldWidget(
+                value, self._prop.name, is_modified, old_value,
+                self._document, self._guid_resolver
+            )
+            field.reference_clicked.connect(self.reference_clicked)
+            field.external_reference_clicked.connect(self.external_reference_clicked)
         else:
             # Simple value field
             value_str = self._format_simple_value(value)
@@ -599,13 +1022,6 @@ class PropertyRowWidget(QWidget):
             return _format_float(value)
         if isinstance(value, int):
             return str(value)
-        if isinstance(value, list):
-            if len(value) == 0:
-                return "[ ]"
-            return f"Array [{len(value)}]"
-        if isinstance(value, dict):
-            # Generic dict (not vector/color/reference)
-            return "{...}"
         return str(value)[:60]
 
 
@@ -692,7 +1108,9 @@ class ComponentWidget(QFrame):
 
         # Component name
         display_name = get_component_display_name(
-            self._component.type_name, self._component.script_name
+            self._component.type_name,
+            self._component.script_name,
+            self._component.script_guid,
         )
         name_label = QLabel(display_name)
         name_label.setStyleSheet("font-weight: bold; font-size: 12px;")
