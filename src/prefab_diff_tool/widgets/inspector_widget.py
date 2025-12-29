@@ -1051,6 +1051,7 @@ class InspectorWidget(QScrollArea):
         self._document: Optional[Any] = None  # UnityDocument for resolving references
         self._guid_resolver: Optional[GuidResolver] = None
         self._component_widgets: list[ComponentWidget] = []
+        self._component_widget_index: dict[str, ComponentWidget] = {}  # O(1) lookup cache
         self._debug_mode = False  # Normal mode by default
         self._setup_ui()
 
@@ -1240,6 +1241,8 @@ class InspectorWidget(QScrollArea):
             widget.external_reference_clicked.connect(self.external_reference_clicked)
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
+            # Cache for O(1) lookup
+            self._component_widget_index[component.file_id] = widget
 
         # Add stretch at the end
         self._content_layout.addStretch()
@@ -1247,6 +1250,7 @@ class InspectorWidget(QScrollArea):
     def _clear(self) -> None:
         """Clear all widgets."""
         self._component_widgets.clear()
+        self._component_widget_index.clear()
 
         # Remove all widgets except the placeholder
         while self._content_layout.count() > 1:
@@ -1279,7 +1283,7 @@ class InspectorWidget(QScrollArea):
 
     def scroll_to_component(self, component_file_id: str) -> bool:
         """
-        Scroll to a specific component by its file_id.
+        Scroll to a specific component by its file_id. O(1) lookup using cache.
 
         Args:
             component_file_id: The file_id of the component to scroll to
@@ -1287,17 +1291,18 @@ class InspectorWidget(QScrollArea):
         Returns:
             True if the component was found and scrolled to
         """
-        for widget in self._component_widgets:
-            if widget._component.file_id == component_file_id:
-                # Expand the component if collapsed
-                if not widget._is_expanded:
-                    widget._toggle_expand()
-                # Process pending events to ensure layout is updated
-                # This is necessary because ensureWidgetVisible needs
-                # accurate widget geometry which isn't available until
-                # the layout system has processed all pending updates
-                QApplication.processEvents()
-                # Scroll to make the component visible
-                self.ensureWidgetVisible(widget)
-                return True
+        # O(1) lookup using cache
+        widget = self._component_widget_index.get(component_file_id)
+        if widget:
+            # Expand the component if collapsed
+            if not widget._is_expanded:
+                widget._toggle_expand()
+            # Process pending events to ensure layout is updated
+            # This is necessary because ensureWidgetVisible needs
+            # accurate widget geometry which isn't available until
+            # the layout system has processed all pending updates
+            QApplication.processEvents()
+            # Scroll to make the component visible
+            self.ensureWidgetVisible(widget)
+            return True
         return False
