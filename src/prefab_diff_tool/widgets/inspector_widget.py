@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QScrollArea,
@@ -1291,6 +1292,11 @@ class InspectorWidget(QScrollArea):
                 # Expand the component if collapsed
                 if not widget._is_expanded:
                     widget._toggle_expand()
+                # Process pending events to ensure layout is updated
+                # This is necessary because ensureWidgetVisible needs
+                # accurate widget geometry which isn't available until
+                # the layout system has processed all pending updates
+                QApplication.processEvents()
                 # Scroll to make the component visible
                 self.ensureWidgetVisible(widget)
                 return True
