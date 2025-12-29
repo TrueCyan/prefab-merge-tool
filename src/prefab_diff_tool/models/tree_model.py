@@ -153,15 +153,18 @@ class HierarchyTreeModel(QAbstractItemModel):
         self._document: Optional[UnityDocument] = None
         self._root = TreeNode(None, NodeType.ROOT)
         self._show_components = False  # Unity Hierarchy style: GameObjects only
+        # Cache for O(1) file_id -> QModelIndex lookup
+        self._index_cache: dict[str, QModelIndex] = {}
 
     def set_document(self, document: Optional[UnityDocument]) -> None:
         """Set the Unity document to display."""
         self.beginResetModel()
         self._document = document
         self._root = TreeNode(None, NodeType.ROOT)
+        self._index_cache.clear()
 
         if document:
-            self._build_tree(document.root_objects, self._root)
+            self._build_tree(document.root_objects, self._root, QModelIndex())
 
         self.endResetModel()
 
@@ -170,21 +173,28 @@ class HierarchyTreeModel(QAbstractItemModel):
         if self._show_components != show:
             self.beginResetModel()
             self._show_components = show
+            self._index_cache.clear()
             if self._document:
                 self._root = TreeNode(None, NodeType.ROOT)
-                self._build_tree(self._document.root_objects, self._root)
+                self._build_tree(self._document.root_objects, self._root, QModelIndex())
             self.endResetModel()
 
     def _build_tree(
         self,
         game_objects: list[UnityGameObject],
         parent_node: TreeNode,
+        parent_index: QModelIndex,
     ) -> None:
-        """Recursively build tree nodes from GameObjects."""
+        """Recursively build tree nodes from GameObjects and cache indices."""
         for idx, go in enumerate(game_objects):
             go_node = TreeNode(go, NodeType.GAME_OBJECT, parent_node)
             go_node.row = len(parent_node.children)
             parent_node.children.append(go_node)
+
+            # Create and cache the index for this node
+            node_index = self.createIndex(go_node.row, 0, go_node)
+            if go.file_id:
+                self._index_cache[go.file_id] = node_index
 
             # Add components as children (if enabled)
             if self._show_components:
@@ -192,9 +202,13 @@ class HierarchyTreeModel(QAbstractItemModel):
                     comp_node = TreeNode(comp, NodeType.COMPONENT, go_node)
                     comp_node.row = len(go_node.children)
                     go_node.children.append(comp_node)
+                    # Cache component index
+                    comp_index = self.createIndex(comp_node.row, 0, comp_node)
+                    if comp.file_id:
+                        self._index_cache[comp.file_id] = comp_index
 
             # Add child GameObjects
-            self._build_tree(go.children, go_node)
+            self._build_tree(go.children, go_node, node_index)
 
     def _get_node(self, index: QModelIndex) -> TreeNode:
         """Get TreeNode from index."""
@@ -401,26 +415,11 @@ class HierarchyTreeModel(QAbstractItemModel):
     # === Navigation helpers ===
 
     def find_index_by_file_id(self, file_id: str) -> QModelIndex:
-        """Find index of a node by its fileID."""
-        return self._find_in_children(self._root, file_id, QModelIndex())
-
-    def _find_in_children(
-        self,
-        parent_node: TreeNode,
-        file_id: str,
-        parent_index: QModelIndex,
-    ) -> QModelIndex:
-        """Recursively search for a node by fileID."""
-        for i, child in enumerate(parent_node.children):
-            if child.file_id == file_id:
-                return self.index(i, 0, parent_index)
-
-            # Search in children
-            child_index = self.index(i, 0, parent_index)
-            result = self._find_in_children(child, file_id, child_index)
-            if result.isValid():
-                return result
-
+        """Find index of a node by its fileID. O(1) lookup using cache."""
+        # Use cache for O(1) lookup
+        cached_index = self._index_cache.get(file_id)
+        if cached_index is not None and cached_index.isValid():
+            return cached_index
         return QModelIndex()
 
     def get_changed_indices(self) -> list[QModelIndex]:
