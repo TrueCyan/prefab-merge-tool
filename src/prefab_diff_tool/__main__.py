@@ -143,6 +143,8 @@ def main() -> int:
         files=files,
         output=args.output,
         unity_root=unity_root,
+        workspace_root=args.workspace_root,
+        depot_path=args.depot_path,
     )
 
 

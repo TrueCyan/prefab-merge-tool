@@ -37,7 +37,13 @@ UNITY_FILE_FILTER = (
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, parent: Optional[QWidget] = None, unity_root: Optional[Path] = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        unity_root: Optional[Path] = None,
+        workspace_root: Optional[Path] = None,
+        depot_path: Optional[str] = None,
+    ):
         super().__init__(parent)
 
         self.setWindowTitle("prefab-diff-tool")
@@ -45,6 +51,9 @@ class MainWindow(QMainWindow):
 
         # Unity project root (for GUID resolution)
         self._unity_root = unity_root
+        # CLI arguments (for debugging)
+        self._workspace_root = workspace_root
+        self._depot_path = depot_path
 
         # Restore window geometry
         self._load_settings()
@@ -546,6 +555,10 @@ class MainWindow(QMainWindow):
         vcs_info = get_vcs_info()
 
         info_text = f"""<h3>디버그 정보</h3>
+<h4>CLI 인자</h4>
+<pre>--workspace-root: {self._workspace_root}
+--depot-path: {self._depot_path}</pre>
+
 <h4>Unity 프로젝트</h4>
 <pre>unity_root: {self._unity_root}</pre>
 
