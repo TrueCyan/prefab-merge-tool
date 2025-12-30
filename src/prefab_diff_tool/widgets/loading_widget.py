@@ -70,10 +70,12 @@ class FileLoadingWorker(QThread):
     def __init__(
         self,
         file_paths: list[Path],
+        unity_root: Optional[Path] = None,
         parent: Optional[QThread] = None,
     ):
         super().__init__(parent)
         self._file_paths = file_paths
+        self._unity_root = unity_root
         self._documents: list[Optional[UnityDocument]] = []
         self._cancelled = False
         self._guid_resolver: Optional[GuidResolver] = None
@@ -89,7 +91,7 @@ class FileLoadingWorker(QThread):
                     return
 
                 self.progress.emit(i, total_steps, f"Loading {path.name}...")
-                doc = load_unity_file(path)
+                doc = load_unity_file(path, unity_root=self._unity_root)
                 self._documents.append(doc)
                 self.file_loaded.emit(doc, i)
 

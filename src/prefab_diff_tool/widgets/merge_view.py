@@ -240,7 +240,7 @@ class MergeView(QWidget):
             self._loading_worker.wait()
 
         # Start async loading
-        self._loading_worker = FileLoadingWorker([base, ours, theirs])
+        self._loading_worker = FileLoadingWorker([base, ours, theirs], unity_root=self._unity_root)
         self._loading_worker.progress.connect(self._on_loading_progress)
         self._loading_worker.file_loaded.connect(self._on_file_loaded)
         self._loading_worker.indexing_started.connect(self._on_indexing_started)
