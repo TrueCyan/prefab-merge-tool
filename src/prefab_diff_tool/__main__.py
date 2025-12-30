@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print debug info (detected paths) to stderr",
+    )
+
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -112,6 +118,11 @@ def main() -> int:
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
     unity_root = detect_unity_project_root(files, workspace_root=args.workspace_root)
+
+    if args.debug:
+        print(f"[DEBUG] --workspace-root: {args.workspace_root}", file=sys.stderr)
+        print(f"[DEBUG] detected unity_root: {unity_root}", file=sys.stderr)
+        print(f"[DEBUG] input files: {files}", file=sys.stderr)
 
     # Start GUI
     from prefab_diff_tool.app import run_app
