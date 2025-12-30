@@ -113,38 +113,21 @@ def _detect_perforce_workspace() -> Optional[Path]:
     return None
 
 
-def detect_unity_project_root(
-    file_paths: list[Path],
-    explicit_root: Optional[Path] = None,
-) -> Optional[Path]:
+def detect_unity_project_root(file_paths: list[Path]) -> Optional[Path]:
     """
     Detect Unity project root using multiple strategies.
 
     Priority order:
-    1. Explicit root (--unity-root option)
-    2. VCS workspace detection (for temp files from difftool/mergetool)
-    3. Auto-detect from file paths (for normal files within project)
+    1. VCS workspace detection (for temp files from difftool/mergetool)
+    2. Auto-detect from file paths (for normal files within project)
 
     Args:
         file_paths: List of file paths being processed
-        explicit_root: Explicitly specified Unity root (from CLI)
 
     Returns:
         Path to Unity project root, or None if not found
     """
-    # Priority 1: Explicit root
-    if explicit_root:
-        if explicit_root.is_dir():
-            # Check if it's a valid Unity project
-            assets = explicit_root / "Assets"
-            if assets.is_dir():
-                return explicit_root
-            # Maybe user passed a file path? Try to find project root from it
-            found = GuidResolver.find_project_root(explicit_root)
-            if found:
-                return found
-
-    # Priority 2: VCS workspace detection
+    # Priority 1: VCS workspace detection
     vcs_workspace = detect_vcs_workspace()
     if vcs_workspace:
         # Check if VCS workspace is a Unity project
@@ -160,7 +143,7 @@ def detect_unity_project_root(
                 if assets.is_dir() and project_settings.is_dir():
                     return subdir
 
-    # Priority 3: Auto-detect from file paths
+    # Priority 2: Auto-detect from file paths
     for file_path in file_paths:
         if file_path and file_path.exists():
             found = GuidResolver.find_project_root(file_path)

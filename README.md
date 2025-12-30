@@ -110,12 +110,6 @@ export P4MERGE='prefab-diff --merge "$base" "$theirs" "$yours" -o "$result"'
 - **Git**: `GIT_WORK_TREE` 환경변수에서 프로젝트 감지
 - **Perforce**: `p4 info`의 Client root에서 프로젝트 감지
 
-수동 지정이 필요한 경우:
-
-```bash
-prefab-diff --diff a.prefab b.prefab --unity-root /path/to/unity/project
-```
-
 ## 스크린샷
 
 (TODO: 스크린샷 추가)

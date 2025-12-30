@@ -50,14 +50,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--unity-root", "-u",
-        type=Path,
-        help="Unity project root path (folder containing Assets/). "
-             "Auto-detected from: 1) VCS workspace (Git/Perforce), "
-             "2) file location. Use this to override auto-detection.",
-    )
-
-    parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -107,23 +99,12 @@ def main() -> int:
     if files and not validate_files(files):
         return 1
 
-    # Detect Unity project root with priority:
-    # 1. Explicit --unity-root option
-    # 2. VCS workspace detection (Git/Perforce) - for temp files
-    # 3. Auto-detect from file paths
+    # Detect Unity project root:
+    # 1. VCS workspace detection (Git/Perforce) - for temp files
+    # 2. Auto-detect from file paths
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
-    unity_root = detect_unity_project_root(files, args.unity_root)
-
-    # Validate if explicit root was provided but detection failed
-    if args.unity_root and not unity_root:
-        if not args.unity_root.exists():
-            print(f"Error: Unity root path not found: {args.unity_root}", file=sys.stderr)
-            return 1
-        assets_path = args.unity_root / "Assets"
-        if not assets_path.is_dir():
-            print(f"Error: Invalid Unity project (no Assets folder): {args.unity_root}", file=sys.stderr)
-            return 1
+    unity_root = detect_unity_project_root(files)
 
     # Start GUI
     from prefab_diff_tool.app import run_app
