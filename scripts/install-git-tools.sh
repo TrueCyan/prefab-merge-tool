@@ -5,6 +5,10 @@
 # 역할 분리:
 # - unityflow: CLI 자동 병합, Git merge driver
 # - prefab-diff-tool: GUI difftool/mergetool
+#
+# GUID 추적:
+# prefab-diff는 Git 환경변수(GIT_WORK_TREE)를 자동 감지하여
+# 임시파일에서도 Unity 프로젝트 루트를 찾아 GUID를 해결합니다.
 
 set -e
 
@@ -13,6 +17,8 @@ echo
 echo "이 스크립트는 두 도구를 함께 설정합니다:"
 echo "  • unityflow      - CLI 자동 병합 (merge driver)"
 echo "  • prefab-diff    - GUI 시각적 diff/merge (difftool/mergetool)"
+echo
+echo "GUID 추적: Git 환경변수를 자동 감지하여 임시파일에서도 동작합니다."
 echo
 
 # Check if tools are installed
