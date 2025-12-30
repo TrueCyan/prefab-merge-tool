@@ -14,28 +14,25 @@ from typing import Optional
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 
-def detect_vcs_workspace(p4_client: Optional[str] = None) -> Optional[Path]:
+def detect_vcs_workspace() -> Optional[Path]:
     """
     Detect VCS workspace root from environment variables and commands.
 
     Tries multiple detection methods in order:
     1. Git environment variables (GIT_WORK_TREE, GIT_DIR)
     2. Git command (git rev-parse --show-toplevel)
-    3. Perforce (p4 info, with optional client specification)
-
-    Args:
-        p4_client: Perforce client name to use
+    3. Perforce (p4 info with P4CLIENT env var)
 
     Returns:
         Path to workspace root, or None if not detected
     """
-    # Try Git first (most common)
+    # Try Git first
     workspace = _detect_git_workspace()
     if workspace:
         return workspace
 
     # Try Perforce
-    workspace = _detect_perforce_workspace(client=p4_client)
+    workspace = _detect_perforce_workspace()
     if workspace:
         return workspace
 
@@ -82,13 +79,8 @@ def _detect_git_workspace() -> Optional[Path]:
     return None
 
 
-def _detect_perforce_workspace(client: Optional[str] = None) -> Optional[Path]:
-    """Detect Perforce workspace root.
-
-    Args:
-        client: Perforce client name (from P4V's %P variable).
-                If provided, uses 'p4 -c <client> info'.
-    """
+def _detect_perforce_workspace() -> Optional[Path]:
+    """Detect Perforce workspace root."""
     # Method 1: P4ROOT environment variable
     p4root = os.environ.get("P4ROOT")
     if p4root:
@@ -97,10 +89,12 @@ def _detect_perforce_workspace(client: Optional[str] = None) -> Optional[Path]:
             return path
 
     # Method 2: Run p4 info command
+    # P4V exports P4CLIENT env var when calling external tools
     try:
         cmd = ["p4"]
-        if client:
-            cmd.extend(["-c", client])
+        p4client = os.environ.get("P4CLIENT")
+        if p4client:
+            cmd.extend(["-c", p4client])
         cmd.append("info")
 
         result = subprocess.run(
@@ -124,10 +118,7 @@ def _detect_perforce_workspace(client: Optional[str] = None) -> Optional[Path]:
     return None
 
 
-def detect_unity_project_root(
-    file_paths: list[Path],
-    p4_client: Optional[str] = None,
-) -> Optional[Path]:
+def detect_unity_project_root(file_paths: list[Path]) -> Optional[Path]:
     """
     Detect Unity project root using multiple strategies.
 
@@ -137,13 +128,12 @@ def detect_unity_project_root(
 
     Args:
         file_paths: List of file paths being processed
-        p4_client: Perforce client name to use
 
     Returns:
         Path to Unity project root, or None if not found
     """
     # Priority 1: VCS workspace detection
-    vcs_workspace = detect_vcs_workspace(p4_client=p4_client)
+    vcs_workspace = detect_vcs_workspace()
     if vcs_workspace:
         # Check if VCS workspace is a Unity project
         assets = vcs_workspace / "Assets"
