@@ -87,28 +87,19 @@ git mergetool -t prefab-diff              # merge
 
 ### Perforce 설정
 
-**1. 파일 타입 설정 (서버 관리자):**
+**P4V (Edit → Preferences):**
 
-```
-p4 typemap
-```
+1. **Diff** 탭에서 도구 추가:
+   - Name: `prefab-diff`
+   - Application: `prefab-diff`
+   - Arguments: `--diff %1 %2`
+   - Extension: `.prefab`, `.unity`, `.asset`
 
-```
-Typemap:
-    text //depot/.../*.prefab
-    text //depot/.../*.unity
-    text //depot/.../*.asset
-    text //depot/.../*.meta
-```
-
-**2. P4V Diff/Merge 도구:**
-
-| 설정 | Application | Arguments |
-|------|-------------|-----------|
-| Diff | `prefab-diff` | `--diff %1 %2` |
-| Merge | `prefab-diff` | `--merge %b %t %s -o %r` |
-
-*Edit → Preferences → Diff / Merge*
+2. **Merge** 탭에서 도구 추가:
+   - Name: `prefab-diff`
+   - Application: `prefab-diff`
+   - Arguments: `--merge %b %t %s -o %r`
+   - Extension: `.prefab`, `.unity`, `.asset`
 
 ### GUID 추적
 
