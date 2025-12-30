@@ -16,11 +16,22 @@ from pathlib import Path
 from prefab_diff_tool import __version__
 
 
-def find_p4_workspace_root() -> Path | None:
+def find_p4_workspace_root(
+    hint_files: list[Path] | None = None,
+) -> tuple[Path | None, list[Path]]:
     """
     Find Unity project root from current Perforce workspace.
 
     Uses `p4 info` to get client root, then searches for Unity project structure.
+    If hint_files provided, tries to match file names to find the correct project.
+
+    Args:
+        hint_files: Optional list of files being compared (may be temp paths,
+                   but file names can be used as hints)
+
+    Returns:
+        Tuple of (selected_project, all_projects).
+        If multiple projects found, tries to select based on file name match.
     """
     try:
         result = subprocess.run(
@@ -30,40 +41,95 @@ def find_p4_workspace_root() -> Path | None:
             timeout=5,
         )
         if result.returncode != 0:
-            return None
+            return None, []
 
         # Parse "Client root: /path/to/workspace"
         for line in result.stdout.splitlines():
             if line.startswith("Client root:"):
                 client_root = Path(line.split(":", 1)[1].strip())
                 if client_root.exists():
-                    # Search for Unity project in client root
-                    return find_unity_project_in_path(client_root)
+                    projects = find_all_unity_projects_in_path(client_root)
+                    if projects:
+                        # If only one project, use it
+                        if len(projects) == 1:
+                            return projects[0], projects
+
+                        # Multiple projects - try to match by file name
+                        if hint_files:
+                            matched = find_project_by_filename(projects, hint_files)
+                            if matched:
+                                return matched, projects
+
+                        # Fallback to first project
+                        return projects[0], projects
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
+    return None, []
+
+
+def find_project_by_filename(
+    projects: list[Path],
+    hint_files: list[Path],
+) -> Path | None:
+    """
+    Find which project contains a file with matching name.
+
+    Searches each project's Assets folder for files matching the hint file names.
+    """
+    for hint_file in hint_files:
+        if not hint_file:
+            continue
+
+        filename = hint_file.name
+        if not filename:
+            continue
+
+        # Search for this filename in each project
+        for project in projects:
+            assets_path = project / "Assets"
+            if not assets_path.exists():
+                continue
+
+            # Search recursively for the file
+            matches = list(assets_path.rglob(filename))
+            if matches:
+                return project
+
     return None
 
 
-def find_unity_project_in_path(root: Path) -> Path | None:
+def find_all_unity_projects_in_path(root: Path, max_depth: int = 3) -> list[Path]:
     """
-    Find Unity project root within a directory.
+    Find all Unity projects within a directory.
 
-    Searches up to 3 levels deep for Assets + ProjectSettings folders.
+    Searches up to max_depth levels deep for Assets + ProjectSettings folders.
+    Returns list of all found Unity project paths.
     """
+    projects: list[Path] = []
+
     # Check if root itself is a Unity project
     if (root / "Assets").is_dir() and (root / "ProjectSettings").is_dir():
-        return root
+        projects.append(root)
+        return projects  # If root is a project, don't search subdirectories
 
-    # Search subdirectories (common patterns: root/ProjectName, root/Unity, etc.)
-    search_patterns = ["*", "*/*", "*/*/*"]
-    for pattern in search_patterns:
+    # Search subdirectories
+    search_patterns = ["*"] * max_depth
+    for depth, _ in enumerate(search_patterns, 1):
+        pattern = "/".join(["*"] * depth)
         for path in root.glob(pattern):
             if path.is_dir():
                 assets = path / "Assets"
                 project_settings = path / "ProjectSettings"
                 if assets.is_dir() and project_settings.is_dir():
-                    return path
-    return None
+                    # Check if not already a subdirectory of a found project
+                    is_subproject = any(
+                        path != p and str(path).startswith(str(p) + os.sep)
+                        for p in projects
+                    )
+                    if not is_subproject:
+                        projects.append(path)
+
+    return sorted(projects, key=lambda p: str(p))
 
 
 def parse_args() -> argparse.Namespace:
@@ -168,9 +234,22 @@ def main() -> int:
 
     # Try to auto-detect from Perforce workspace if still not found
     if not unity_root:
-        unity_root = find_p4_workspace_root()
-        if unity_root:
-            print(f"Auto-detected Unity project from P4 workspace: {unity_root}", file=sys.stderr)
+        detected, all_projects = find_p4_workspace_root(hint_files=files)
+        if detected:
+            unity_root = detected
+            if len(all_projects) > 1:
+                print(
+                    f"Found {len(all_projects)} Unity projects, matched by filename:",
+                    file=sys.stderr,
+                )
+                for proj in all_projects:
+                    marker = " -> " if proj == unity_root else "    "
+                    print(f"{marker}{proj}", file=sys.stderr)
+            else:
+                print(
+                    f"Auto-detected Unity project from P4 workspace: {unity_root}",
+                    file=sys.stderr,
+                )
 
     # Validate unity root if provided
     if unity_root:
