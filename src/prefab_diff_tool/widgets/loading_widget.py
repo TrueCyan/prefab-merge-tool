@@ -473,6 +473,18 @@ class LoadingProgressWidget(QWidget):
             interval_ms: Poll interval in milliseconds (default 50ms = 20fps)
         """
         self._progress_state = progress_state
+
+        # Ensure progress bar is in determinate mode
+        self._progress_bar.setMaximum(100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFormat("0%")
+        self._phase_label.setText("[시작]")
+        self._status.setText("로딩 준비 중...")
+
+        # Stop any existing timer
+        if self._poll_timer:
+            self._poll_timer.stop()
+
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_progress)
         self._poll_timer.start(interval_ms)
@@ -556,21 +568,28 @@ class LoadingProgressWidget(QWidget):
         self, percent: int, phase_name: str, message: str
     ) -> None:
         """Update progress with phase information."""
+        # Ensure bar is in determinate mode (max=100)
+        if self._progress_bar.maximum() != 100:
+            self._progress_bar.setMaximum(100)
+
         self._progress_bar.setValue(min(100, percent))
         self._progress_bar.setFormat(f"{percent}%")
 
         # Translate phase names to Korean
         phase_display = {
+            "idle": "대기",
             "file_loading": "파일 로딩",
             "cache_loading": "캐시 로드",
             "meta_scanning": "파일 탐색",
             "change_detection": "변경 감지",
             "guid_indexing": "인덱싱",
             "cache_saving": "캐시 저장",
+            "Complete": "완료",
         }.get(phase_name, phase_name)
 
         self._phase_label.setText(f"[{phase_display}]")
-        self._status.setText(message)
+        if message:
+            self._status.setText(message)
 
     def set_indeterminate(self, indeterminate: bool = True) -> None:
         """Set indeterminate (pulsing) mode."""
