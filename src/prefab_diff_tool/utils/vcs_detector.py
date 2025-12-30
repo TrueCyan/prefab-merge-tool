@@ -221,24 +221,25 @@ def detect_unity_project_root(
     Returns:
         Path to Unity project root, or None if not found
     """
-    # Priority 1: P4V temp file path parsing
-    if workspace_root:
+    # Collect valid workspace roots
+    workspaces: list[Path] = []
+    if workspace_root and workspace_root.is_dir():
+        workspaces.append(workspace_root)
+    vcs_workspace = detect_vcs_workspace()
+    if vcs_workspace and vcs_workspace not in workspaces:
+        workspaces.append(vcs_workspace)
+
+    # Priority 1: P4V temp file path parsing (try all workspaces)
+    for ws in workspaces:
         for file_path in file_paths:
             if file_path:
-                found = _find_unity_from_p4v_temp_path(workspace_root, file_path)
+                found = _find_unity_from_p4v_temp_path(ws, file_path)
                 if found:
                     return found
 
-    # Priority 2: Workspace root only
-    if workspace_root:
-        found = _find_unity_in_workspace(workspace_root)
-        if found:
-            return found
-
-    # Priority 3: VCS workspace detection
-    vcs_workspace = detect_vcs_workspace()
-    if vcs_workspace:
-        found = _find_unity_in_workspace(vcs_workspace)
+    # Priority 2: Search for Unity project in workspace (first match)
+    for ws in workspaces:
+        found = _find_unity_in_workspace(ws)
         if found:
             return found
 
