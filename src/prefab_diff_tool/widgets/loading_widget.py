@@ -495,6 +495,11 @@ class LoadingProgressWidget(QWidget):
             self._poll_timer.stop()
             self._poll_timer = None
 
+        # Do one final poll to show the final state
+        if self._progress_state:
+            phase, percent, total, message = self._progress_state.get()
+            self.update_progress_detailed(percent, phase, message)
+
     def _poll_progress(self) -> None:
         """Poll progress state and update UI."""
         if self._progress_state:
