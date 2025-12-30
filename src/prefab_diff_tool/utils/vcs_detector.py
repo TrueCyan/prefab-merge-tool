@@ -82,23 +82,15 @@ def _detect_git_workspace() -> Optional[Path]:
 
 def _detect_perforce_workspace() -> Optional[Path]:
     """Detect Perforce workspace root."""
-    # Method 1: P4CONFIG file search (walk up from current directory)
-    p4config_name = os.environ.get("P4CONFIG", ".p4config")
-    current = Path.cwd()
-    while current != current.parent:
-        p4config = current / p4config_name
-        if p4config.is_file():
-            return current
-        current = current.parent
-
-    # Method 2: P4ROOT environment variable (explicit root)
+    # Method 1: P4ROOT environment variable (explicit root, fastest)
     p4root = os.environ.get("P4ROOT")
     if p4root:
         path = Path(p4root)
         if path.is_dir():
             return path
 
-    # Method 3: Run p4 info command
+    # Method 2: Run p4 info command (works without .p4config if P4CLIENT is set)
+    # This is the most reliable method when Perforce environment is configured
     try:
         result = subprocess.run(
             ["p4", "info"],
@@ -111,12 +103,22 @@ def _detect_perforce_workspace() -> Optional[Path]:
             for line in result.stdout.splitlines():
                 if line.startswith("Client root:"):
                     root_path = line.split(":", 1)[1].strip()
-                    if root_path:
+                    if root_path and root_path != "*unknown*":
                         path = Path(root_path)
                         if path.is_dir():
                             return path
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
+
+    # Method 3: P4CONFIG file search (walk up from current directory)
+    # Fallback when p4 command is not available or not configured
+    p4config_name = os.environ.get("P4CONFIG", ".p4config")
+    current = Path.cwd()
+    while current != current.parent:
+        p4config = current / p4config_name
+        if p4config.is_file():
+            return current
+        current = current.parent
 
     return None
 

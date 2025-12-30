@@ -73,18 +73,16 @@ echo "  Application: $PREFAB_DIFF_PATH"
 echo "  Arguments: --diff %1 %2"
 echo
 
-# === .p4config 설정 ===
-echo "=== .p4config 설정 (권장) ==="
+# === GUID 추적 ===
+echo "=== GUID 추적 (자동) ==="
 echo
-echo "Unity 프로젝트 루트에 .p4config 파일을 생성하면"
-echo "prefab-diff가 자동으로 프로젝트 위치를 감지합니다:"
+echo "prefab-diff는 다음 순서로 Unity 프로젝트를 자동 감지합니다:"
+echo "  1. P4ROOT 환경변수"
+echo "  2. 'p4 info'의 Client root (P4CLIENT 설정 시)"
+echo "  3. .p4config 파일 위치 (선택사항)"
 echo
-echo "  # .p4config 예시"
-echo "  P4CLIENT=your_workspace_name"
-echo "  P4PORT=your_server:1666"
-echo
-echo "그리고 다음 환경변수를 설정하세요:"
-echo "  export P4CONFIG=.p4config"
+echo "대부분의 경우 Perforce 환경변수가 설정되어 있으면"
+echo "추가 설정 없이 GUID 추적이 동작합니다."
 echo
 
 # === 파일 타입 설정 ===
