@@ -92,23 +92,23 @@ git mergetool -t prefab-diff              # merge
 1. **Diff** 탭에서 도구 추가:
    - Name: `prefab-diff`
    - Application: `prefab-diff`
-   - Arguments: `--diff %1 %2 -w $r --depot-path %f`
+   - Arguments: `--diff %1 %2 -w $r`
    - Extension: `.prefab`, `.unity`, `.asset`
 
 2. **Merge** 탭에서 도구 추가:
    - Name: `prefab-diff`
    - Application: `prefab-diff`
-   - Arguments: `--merge %b %t %s -o %r -w $r --depot-path %f`
+   - Arguments: `--merge %b %t %s -o %r -w $r`
    - Extension: `.prefab`, `.unity`, `.asset`
 
-*`$r`: 워크스페이스 루트, `%f`: depot 경로 (Unity 프로젝트 식별용)*
+*`$r`: 워크스페이스 루트 경로*
 
 ### GUID 추적
 
 임시파일(difftool/mergetool)에서도 GUID가 해결됩니다:
 
 - **Git**: `GIT_WORK_TREE` 환경변수에서 프로젝트 감지
-- **Perforce**: `--workspace-root`와 `--depot-path`로 프로젝트 감지
+- **Perforce**: 임시파일 경로에서 프로젝트명 추출 (`.../p4v/.../NIKKE/Assets/...` → NIKKE)
 
 ## 스크린샷
 

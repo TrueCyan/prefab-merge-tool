@@ -554,10 +554,26 @@ class MainWindow(QMainWindow):
 
         vcs_info = get_vcs_info()
 
+        # Extract project name from temp file path (for debugging)
+        extracted_project = None
+        for f in self._current_files:
+            path_str = str(f).replace("\\", "/")
+            if "/p4v/" in path_str.lower():
+                parts = path_str.split("/")
+                try:
+                    assets_idx = next(i for i, p in enumerate(parts) if p == "Assets")
+                    if assets_idx > 0:
+                        extracted_project = parts[assets_idx - 1]
+                        break
+                except StopIteration:
+                    pass
+
         info_text = f"""<h3>디버그 정보</h3>
 <h4>CLI 인자</h4>
-<pre>--workspace-root: {self._workspace_root}
---depot-path: {self._depot_path}</pre>
+<pre>--workspace-root: {self._workspace_root}</pre>
+
+<h4>P4V 임시파일 분석</h4>
+<pre>추출된 프로젝트명: {extracted_project or '(없음)'}</pre>
 
 <h4>Unity 프로젝트</h4>
 <pre>unity_root: {self._unity_root}</pre>

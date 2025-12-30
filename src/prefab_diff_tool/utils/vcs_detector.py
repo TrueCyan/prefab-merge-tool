@@ -133,50 +133,68 @@ def _find_unity_in_workspace(workspace: Path) -> Optional[Path]:
     return None
 
 
-def _find_unity_from_depot_path(
+def _find_unity_from_p4v_temp_path(
     workspace_root: Path,
-    depot_path: str,
+    temp_file_path: Path,
 ) -> Optional[Path]:
     """
-    Find Unity project from Perforce depot path.
+    Find Unity project from P4V temp file path.
+
+    P4V creates temp files with structure:
+    {temp_dir}/p4v/{workspace_info}/{stream}/{project}/Assets/...
+
+    Example:
+    C:/Users/.../Temp/p4v/DESKTOP_server_1666_utf8/unity/dev/NIKKE/Assets/NK/...
+    -> project name = NIKKE (folder before Assets)
 
     Args:
         workspace_root: Workspace root path
-        depot_path: Depot path like //depot/ProjectB/Assets/Prefabs/Player.prefab
+        temp_file_path: Path to P4V temp file
 
     Returns:
         Path to Unity project root, or None if not found
     """
-    if not depot_path or not workspace_root or not workspace_root.is_dir():
+    if not workspace_root or not workspace_root.is_dir():
         return None
 
-    # Find "Assets" in depot path and get the path before it
-    # Example: //depot/ProjectB/Assets/Prefabs/Player.prefab
-    #          -> relative_project = ProjectB
-    parts = depot_path.replace("\\", "/").split("/")
+    path_str = str(temp_file_path).replace("\\", "/")
 
-    # Find Assets folder index
+    # Check if this is a P4V temp file
+    p4v_marker = "/p4v/"
+    if p4v_marker.lower() not in path_str.lower():
+        return None
+
+    # Find Assets in the path
+    parts = path_str.split("/")
     try:
-        assets_idx = parts.index("Assets")
-    except ValueError:
+        assets_idx = next(i for i, p in enumerate(parts) if p == "Assets")
+    except StopIteration:
         return None
 
-    # Get path components between depot root and Assets
-    # Skip empty parts and depot name (first non-empty parts after //)
-    non_empty = [p for p in parts if p]
-    try:
-        assets_idx = non_empty.index("Assets")
-    except ValueError:
+    # Project folder is right before Assets
+    if assets_idx < 1:
         return None
 
-    # Parts before Assets (excluding depot root like "depot")
-    # Try progressively shorter paths to find the Unity project
-    for start_idx in range(1, assets_idx):
-        relative_parts = non_empty[start_idx:assets_idx]
-        if relative_parts:
-            candidate = workspace_root / Path(*relative_parts)
-            if candidate.is_dir() and (candidate / "Assets").is_dir():
-                return candidate
+    project_name = parts[assets_idx - 1]
+    if not project_name:
+        return None
+
+    # Search for this project in workspace
+    # Direct child first
+    candidate = workspace_root / project_name
+    if candidate.is_dir() and (candidate / "Assets").is_dir():
+        return candidate
+
+    # Search recursively (max 2 levels)
+    for subdir in workspace_root.iterdir():
+        if subdir.is_dir():
+            if subdir.name == project_name and (subdir / "Assets").is_dir():
+                return subdir
+            # One more level
+            for subsubdir in subdir.iterdir():
+                if subsubdir.is_dir():
+                    if subsubdir.name == project_name and (subsubdir / "Assets").is_dir():
+                        return subsubdir
 
     return None
 
@@ -184,13 +202,13 @@ def _find_unity_from_depot_path(
 def detect_unity_project_root(
     file_paths: list[Path],
     workspace_root: Optional[Path] = None,
-    depot_path: Optional[str] = None,
+    depot_path: Optional[str] = None,  # kept for compatibility, not used
 ) -> Optional[Path]:
     """
     Detect Unity project root using multiple strategies.
 
     Priority order:
-    1. Depot path + workspace root (most accurate for Perforce)
+    1. P4V temp file path parsing (extract project name from temp path)
     2. Workspace root only (search for Unity project)
     3. VCS workspace detection (for temp files from difftool/mergetool)
     4. Auto-detect from file paths (for normal files within project)
@@ -198,16 +216,18 @@ def detect_unity_project_root(
     Args:
         file_paths: List of file paths being processed
         workspace_root: Workspace root path (e.g., from P4V's $r)
-        depot_path: Perforce depot path (e.g., from P4V's %f)
+        depot_path: Unused, kept for compatibility
 
     Returns:
         Path to Unity project root, or None if not found
     """
-    # Priority 1: Depot path + workspace root
-    if workspace_root and depot_path:
-        found = _find_unity_from_depot_path(workspace_root, depot_path)
-        if found:
-            return found
+    # Priority 1: P4V temp file path parsing
+    if workspace_root:
+        for file_path in file_paths:
+            if file_path:
+                found = _find_unity_from_p4v_temp_path(workspace_root, file_path)
+                if found:
+                    return found
 
     # Priority 2: Workspace root only
     if workspace_root:
