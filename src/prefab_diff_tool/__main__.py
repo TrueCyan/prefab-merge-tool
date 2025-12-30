@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--depot-path",
+        type=str,
+        help="Perforce depot path for Unity project detection (P4V: %%f)",
+    )
+
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Print debug info (detected paths) to stderr",
@@ -117,10 +123,15 @@ def main() -> int:
     # 3. Auto-detect from file paths
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
-    unity_root = detect_unity_project_root(files, workspace_root=args.workspace_root)
+    unity_root = detect_unity_project_root(
+        files,
+        workspace_root=args.workspace_root,
+        depot_path=args.depot_path,
+    )
 
     if args.debug:
         print(f"[DEBUG] --workspace-root: {args.workspace_root}", file=sys.stderr)
+        print(f"[DEBUG] --depot-path: {args.depot_path}", file=sys.stderr)
         print(f"[DEBUG] detected unity_root: {unity_root}", file=sys.stderr)
         print(f"[DEBUG] input files: {files}", file=sys.stderr)
 
