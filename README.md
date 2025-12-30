@@ -56,16 +56,7 @@ prefab-diff --diff old.prefab new.prefab
 prefab-diff --merge base.prefab ours.prefab theirs.prefab -o merged.prefab
 ```
 
-### Git 통합 (권장)
-
-설치 스크립트 사용:
-
-```bash
-./scripts/install-git-tools.sh        # 로컬 저장소
-./scripts/install-git-tools.sh --global  # 글로벌
-```
-
-또는 수동 설정:
+### Git 설정
 
 ```bash
 # 1. unityflow merge driver (자동 병합)
@@ -79,32 +70,50 @@ git config difftool.prefab-diff.cmd 'prefab-diff --diff "$LOCAL" "$REMOTE"'
 git config mergetool.prefab-diff.cmd 'prefab-diff --merge "$BASE" "$LOCAL" "$REMOTE" -o "$MERGED"'
 ```
 
-### .gitattributes 설정
-
-Unity 프로젝트 루트에 추가:
+`.gitattributes` (Unity 프로젝트 루트):
 
 ```gitattributes
-# Unity 파일 자동 병합
 *.prefab merge=unity
 *.unity merge=unity
 *.asset merge=unity
-*.anim merge=unity
-*.controller merge=unity
-*.mat merge=unity
 ```
 
-### 사용 예시
+사용:
 
 ```bash
-# prefab 파일 diff 보기 (GUI)
-git difftool -t prefab-diff -- *.prefab
+git difftool -t prefab-diff -- *.prefab   # diff
+git mergetool -t prefab-diff              # merge
+```
 
-# 충돌 해결 (GUI)
-git mergetool -t prefab-diff
+### Perforce 설정
 
-# 기본 도구로 설정한 경우
-git difftool -- *.prefab
-git mergetool
+**P4V (Perforce Visual Client):**
+
+| 설정 | Application | Arguments |
+|------|-------------|-----------|
+| Diff | `prefab-diff` | `--diff %1 %2` |
+| Merge | `prefab-diff` | `--merge %b %t %s -o %r` |
+
+*Edit → Preferences → Diff / Merge*
+
+**환경변수:**
+
+```bash
+export P4DIFF='prefab-diff --diff "$1" "$2"'
+export P4MERGE='prefab-diff --merge "$base" "$theirs" "$yours" -o "$result"'
+```
+
+### GUID 추적
+
+임시파일(difftool/mergetool)에서도 GUID가 자동으로 해결됩니다:
+
+- **Git**: `GIT_WORK_TREE` 환경변수에서 프로젝트 감지
+- **Perforce**: `p4 info`의 Client root에서 프로젝트 감지
+
+수동 지정이 필요한 경우:
+
+```bash
+prefab-diff --diff a.prefab b.prefab --unity-root /path/to/unity/project
 ```
 
 ## 스크린샷
