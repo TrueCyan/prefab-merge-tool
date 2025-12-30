@@ -2,12 +2,15 @@
 Loading progress widget for async operations.
 
 Uses weighted phases for accurate progress display based on expected duration.
+Progress updates are decoupled from loading logic for zero overhead.
 """
 
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -21,6 +24,29 @@ from PySide6.QtWidgets import (
 from prefab_diff_tool.core.loader import load_unity_file
 from prefab_diff_tool.core.unity_model import UnityDocument
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
+
+
+@dataclass
+class ProgressState:
+    """Thread-safe progress state shared between worker and UI."""
+    phase: str = "idle"
+    current: int = 0
+    total: int = 0
+    message: str = ""
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def update(self, phase: str, current: int, total: int, message: str) -> None:
+        """Update progress state (called from worker thread)."""
+        with self._lock:
+            self.phase = phase
+            self.current = current
+            self.total = total
+            self.message = message
+
+    def get(self) -> tuple[str, int, int, str]:
+        """Get current state (called from UI thread)."""
+        with self._lock:
+            return self.phase, self.current, self.total, self.message
 
 
 class WeightedProgress:
@@ -144,6 +170,10 @@ class FileLoadingWorker(QThread):
     """
     Worker thread for loading Unity files with accurate progress tracking.
 
+    Progress updates are decoupled from loading logic:
+    - Worker updates ProgressState (zero overhead, just memory write)
+    - UI polls ProgressState on a timer (independent of loading speed)
+
     Uses weighted phases based on expected duration:
     - File loading: 5% (fast, just parsing)
     - Cache loading: 5% (loading from SQLite)
@@ -153,19 +183,17 @@ class FileLoadingWorker(QThread):
     - Cache saving: 10% (writing to SQLite)
     """
 
-    # Detailed progress signal: (percent, phase_name, detail_message)
-    progress_detailed = Signal(int, str, str)
-
-    # Legacy progress signal for compatibility
-    progress = Signal(int, int, str)
-
+    # Signals only for state changes, not progress updates
     file_loaded = Signal(object, int)  # document, file_index
     indexing_started = Signal()
     finished = Signal()
     error = Signal(str)
 
+    # Legacy signals kept for compatibility but not used for frequent updates
+    progress_detailed = Signal(int, str, str)
+    progress = Signal(int, int, str)
+
     # Phase weights based on expected duration (17만 assets 기준)
-    # Total time ~15초 기준으로 비율 산정
     PHASE_WEIGHTS = [
         ("file_loading", 5),      # ~0.5초: 프리팹 파일 파싱
         ("cache_loading", 10),    # ~1.5초: SQLite에서 캐시 로드
@@ -187,31 +215,33 @@ class FileLoadingWorker(QThread):
         self._documents: list[Optional[UnityDocument]] = []
         self._cancelled = False
         self._guid_resolver: Optional[GuidResolver] = None
-        self._progress = WeightedProgress(self.PHASE_WEIGHTS)
+        self._weighted_progress = WeightedProgress(self.PHASE_WEIGHTS)
 
-    def _emit_progress(self, phase_progress: tuple[int, int], message: str) -> None:
-        """Emit progress signals."""
+        # Shared progress state - UI polls this instead of receiving signals
+        self.progress_state = ProgressState()
+
+    def _update_progress(self, phase_progress: tuple[int, int], message: str) -> None:
+        """Update progress state (no signal emission, zero overhead)."""
         current, total = phase_progress
-        self._progress.update_phase_progress(current, total)
-        percent = self._progress.get_percent()
-        phase_name = self._progress.get_current_phase_name()
+        self._weighted_progress.update_phase_progress(current, total)
+        percent = self._weighted_progress.get_percent()
+        phase_name = self._weighted_progress.get_current_phase_name()
 
-        self.progress_detailed.emit(percent, phase_name, message)
-        # Legacy signal - emit as percentage out of 100
-        self.progress.emit(percent, 100, message)
+        # Just update shared state - no signal emission
+        self.progress_state.update(phase_name, percent, 100, message)
 
     def run(self) -> None:
         """Load files and index project in background."""
         try:
             # Phase 1: File loading
-            self._progress.set_phase_by_name("file_loading")
+            self._weighted_progress.set_phase_by_name("file_loading")
             num_files = len(self._file_paths)
 
             for i, path in enumerate(self._file_paths):
                 if self._cancelled:
                     return
 
-                self._emit_progress((i, num_files), f"파일 로딩 중: {path.name}")
+                self._update_progress((i, num_files), f"파일 로딩 중: {path.name}")
                 doc = load_unity_file(path, unity_root=self._unity_root)
                 self._documents.append(doc)
                 self.file_loaded.emit(doc, i)
@@ -224,7 +254,7 @@ class FileLoadingWorker(QThread):
                         Path(doc.project_root), auto_index=False
                     )
 
-            self._progress.complete_phase()
+            self._weighted_progress.complete_phase()
 
             # Phase 2-6: GUID indexing with detailed progress
             if self._guid_resolver and not self._cancelled:
@@ -240,26 +270,29 @@ class FileLoadingWorker(QThread):
             self.error.emit(str(e))
 
     def _run_indexing_with_progress(self) -> None:
-        """Run GUID indexing with detailed phase progress."""
+        """Run GUID indexing with detailed phase progress.
+
+        Progress updates use shared ProgressState - no signal overhead.
+        """
         resolver = self._guid_resolver
         if not resolver or not resolver._project_root:
             return
 
         # Phase 2: Cache loading (already done in set_project_root, but report it)
-        self._progress.set_phase_by_name("cache_loading")
+        self._weighted_progress.set_phase_by_name("cache_loading")
         cache_count = len(resolver._cache)
         if cache_count > 0:
-            self._emit_progress((1, 1), f"캐시 로드 완료: {cache_count:,}개 에셋")
+            self._update_progress((1, 1), f"캐시 로드 완료: {cache_count:,}개 에셋")
         else:
-            self._emit_progress((1, 1), "캐시 초기화 중...")
-        self._progress.complete_phase()
+            self._update_progress((1, 1), "캐시 초기화 중...")
+        self._weighted_progress.complete_phase()
 
         if self._cancelled:
             return
 
-        # Phase 3: Meta file scanning
-        self._progress.set_phase_by_name("meta_scanning")
-        self._emit_progress((0, 1), ".meta 파일 검색 중...")
+        # Phase 3: Meta file scanning (no progress callback - just update state)
+        self._weighted_progress.set_phase_by_name("meta_scanning")
+        self._update_progress((0, 1), ".meta 파일 검색 중...")
 
         import os
         meta_files: list[Path] = []
@@ -272,11 +305,8 @@ class FileLoadingWorker(QThread):
         if packages_path.exists():
             search_paths.append(packages_path)
 
-        # Progress updates every N directories (minimize signal overhead)
+        # Just update state periodically - no signal overhead
         scanned_dirs = 0
-        update_interval = 500  # Update every 500 directories (reduces Qt signal overhead)
-        last_reported_count = 0
-
         for search_path in search_paths:
             for root, dirs, files in os.walk(search_path):
                 if self._cancelled:
@@ -286,45 +316,38 @@ class FileLoadingWorker(QThread):
                         meta_files.append(Path(root) / filename)
                 scanned_dirs += 1
 
-                # Less frequent updates to minimize Qt signal overhead
-                if scanned_dirs % update_interval == 0:
+                # Update shared state every 200 dirs (UI polls this)
+                if scanned_dirs % 200 == 0:
                     found = len(meta_files)
-                    # Only emit if count changed significantly
-                    if found - last_reported_count >= 1000:
-                        last_reported_count = found
-                        self._emit_progress(
-                            (found, max(found * 2, 10000)),
-                            f".meta 파일 검색 중... {found:,}개 발견"
-                        )
+                    self._update_progress(
+                        (found, max(found * 2, 10000)),
+                        f".meta 파일 검색 중... {found:,}개 발견"
+                    )
 
         total_meta = len(meta_files)
-        self._emit_progress((1, 1), f".meta 파일 {total_meta:,}개 발견")
-        self._progress.complete_phase()
+        self._update_progress((1, 1), f".meta 파일 {total_meta:,}개 발견")
+        self._weighted_progress.complete_phase()
 
         if self._cancelled or total_meta == 0:
             resolver._indexed = True
             return
 
-        # Phase 4: Change detection
-        self._progress.set_phase_by_name("change_detection")
+        # Phase 4: Change detection (no callback needed)
+        self._weighted_progress.set_phase_by_name("change_detection")
         files_to_process = meta_files
         guids_to_delete: list[str] = []
 
         if resolver._db_cache:
-            self._emit_progress((0, 1), "변경 사항 확인 중...")
+            self._update_progress((0, 1), "변경 사항 확인 중...")
 
-            # Progress callback for change detection
-            def on_change_progress(current: int, total: int, message: str) -> None:
-                self._emit_progress((current, total), message)
-
-            # Get stale entries with progress
+            # No callback - just run and update state periodically
             files_to_process, guids_to_delete = resolver._db_cache.get_stale_entries(
-                meta_files, progress_callback=on_change_progress
+                meta_files  # No progress callback - runs at full speed
             )
 
             # Delete stale entries
             if guids_to_delete:
-                self._emit_progress(
+                self._update_progress(
                     (1, 2), f"삭제된 파일 정리 중... {len(guids_to_delete):,}개"
                 )
                 resolver._db_cache.delete_guids(guids_to_delete)
@@ -334,34 +357,31 @@ class FileLoadingWorker(QThread):
 
         num_to_process = len(files_to_process)
         if num_to_process == 0:
-            self._emit_progress((1, 1), f"캐시 최신 상태: {len(resolver._cache):,}개 에셋")
+            self._update_progress((1, 1), f"캐시 최신 상태: {len(resolver._cache):,}개 에셋")
         elif num_to_process < total_meta:
-            self._emit_progress(
+            self._update_progress(
                 (1, 1), f"변경된 파일 {num_to_process:,}개 발견 (전체 {total_meta:,}개 중)"
             )
         else:
-            self._emit_progress((1, 1), f"전체 인덱싱 필요: {total_meta:,}개 파일")
+            self._update_progress((1, 1), f"전체 인덱싱 필요: {total_meta:,}개 파일")
 
-        self._progress.complete_phase()
+        self._weighted_progress.complete_phase()
 
         if self._cancelled:
             return
 
         # Phase 5: GUID indexing
-        self._progress.set_phase_by_name("guid_indexing")
+        self._weighted_progress.set_phase_by_name("guid_indexing")
 
         if num_to_process == 0:
-            self._emit_progress((1, 1), "인덱싱 불필요 (캐시 사용)")
-            self._progress.complete_phase()
+            self._update_progress((1, 1), "인덱싱 불필요 (캐시 사용)")
+            self._weighted_progress.complete_phase()
         else:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             max_workers = min(32, (os.cpu_count() or 1) + 4)
             processed = 0
             new_entries: list[tuple[str, str, Path, Path, float]] = []
-
-            # Less frequent updates to reduce Qt signal overhead
-            update_interval = max(1000, num_to_process // 50)  # ~50 updates max
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_path = {
@@ -387,51 +407,36 @@ class FileLoadingWorker(QThread):
 
                     processed += 1
 
-                    if processed % update_interval == 0 or processed == num_to_process:
-                        self._emit_progress(
+                    # Update shared state every 500 items (UI polls this)
+                    if processed % 500 == 0:
+                        self._update_progress(
                             (processed, num_to_process),
                             f"인덱싱 중... {processed:,}/{num_to_process:,}"
                         )
 
-            self._progress.complete_phase()
+            self._update_progress((num_to_process, num_to_process), "인덱싱 완료")
+            self._weighted_progress.complete_phase()
 
             if self._cancelled:
                 return
 
             # Phase 6: Cache saving
-            self._progress.set_phase_by_name("cache_saving")
+            self._weighted_progress.set_phase_by_name("cache_saving")
 
             if resolver._db_cache and new_entries:
-                self._emit_progress((0, 1), f"캐시 저장 중... {len(new_entries):,}개 항목")
+                self._update_progress((0, 1), f"캐시 저장 중... {len(new_entries):,}개 항목")
 
-                # Batch save with progress for large datasets
-                batch_size = 10000
-                total_entries = len(new_entries)
-
-                if total_entries <= batch_size:
-                    resolver._db_cache.set_many(new_entries)
-                    self._emit_progress((1, 1), "캐시 저장 완료")
-                else:
-                    saved = 0
-                    for i in range(0, total_entries, batch_size):
-                        if self._cancelled:
-                            return
-                        batch = new_entries[i:i + batch_size]
-                        resolver._db_cache.set_many(batch)
-                        saved += len(batch)
-                        self._emit_progress(
-                            (saved, total_entries),
-                            f"캐시 저장 중... {saved:,}/{total_entries:,}"
-                        )
-
+                # Batch save - no progress updates needed (fast enough)
+                resolver._db_cache.set_many(new_entries)
                 resolver._db_cache.set_last_index_time()
+                self._update_progress((1, 1), "캐시 저장 완료")
             else:
-                self._emit_progress((1, 1), "저장할 변경 사항 없음")
+                self._update_progress((1, 1), "저장할 변경 사항 없음")
 
-            self._progress.complete_phase()
+            self._weighted_progress.complete_phase()
 
         resolver._indexed = True
-        self._emit_progress((1, 1), f"완료: {len(resolver._cache):,}개 에셋 인덱싱됨")
+        self._update_progress((1, 1), f"완료: {len(resolver._cache):,}개 에셋 인덱싱됨")
 
     def cancel(self) -> None:
         """Request cancellation."""
@@ -447,13 +452,42 @@ class FileLoadingWorker(QThread):
 
 
 class LoadingProgressWidget(QWidget):
-    """Widget showing loading progress with phase information."""
+    """Widget showing loading progress with phase information.
+
+    Can poll a ProgressState for updates (decoupled from worker thread).
+    """
 
     cancelled = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._progress_state: Optional[ProgressState] = None
+        self._poll_timer: Optional[QTimer] = None
         self._setup_ui()
+
+    def start_polling(self, progress_state: ProgressState, interval_ms: int = 50) -> None:
+        """Start polling progress state for updates.
+
+        Args:
+            progress_state: Shared state to poll
+            interval_ms: Poll interval in milliseconds (default 50ms = 20fps)
+        """
+        self._progress_state = progress_state
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_progress)
+        self._poll_timer.start(interval_ms)
+
+    def stop_polling(self) -> None:
+        """Stop polling for updates."""
+        if self._poll_timer:
+            self._poll_timer.stop()
+            self._poll_timer = None
+
+    def _poll_progress(self) -> None:
+        """Poll progress state and update UI."""
+        if self._progress_state:
+            phase, percent, total, message = self._progress_state.get()
+            self.update_progress_detailed(percent, phase, message)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -547,7 +581,10 @@ class LoadingProgressWidget(QWidget):
 
 
 class LoadingDialog(QDialog):
-    """Modal dialog showing loading progress."""
+    """Modal dialog showing loading progress.
+
+    Supports polling a worker's ProgressState for decoupled progress updates.
+    """
 
     def __init__(
         self,
@@ -568,6 +605,25 @@ class LoadingDialog(QDialog):
         self._cancellable = cancellable
         self._cancelled = False
         self._setup_ui()
+
+    def connect_worker(self, worker: FileLoadingWorker) -> None:
+        """Connect to a worker's progress state for polling updates.
+
+        Args:
+            worker: The FileLoadingWorker to monitor
+        """
+        self._progress_widget.start_polling(worker.progress_state)
+        worker.finished.connect(self._on_worker_finished)
+        worker.error.connect(self._on_worker_error)
+
+    def _on_worker_finished(self) -> None:
+        """Handle worker completion."""
+        self._progress_widget.stop_polling()
+        self.accept()
+
+    def _on_worker_error(self, error_msg: str) -> None:
+        """Handle worker error."""
+        self._progress_widget.stop_polling()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
