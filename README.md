@@ -105,10 +105,10 @@ git mergetool -t prefab-diff              # merge
 
 ### GUID 추적
 
-임시파일(difftool/mergetool)에서도 GUID가 자동으로 해결됩니다:
+임시파일(difftool/mergetool)에서도 GUID가 해결됩니다:
 
 - **Git**: `GIT_WORK_TREE` 환경변수에서 프로젝트 감지
-- **Perforce**: `--p4-client` 옵션으로 정확한 워크스페이스 감지
+- **Perforce**: `--p4-client`로 워크스페이스 지정 → 프로젝트 감지
 
 ## 스크린샷
 
