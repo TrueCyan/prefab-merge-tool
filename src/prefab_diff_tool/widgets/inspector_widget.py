@@ -7,7 +7,7 @@ similar to Unity's Inspector window.
 
 from typing import Any, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread, QObject
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -797,8 +797,27 @@ class ColorFieldWidget(QWidget):
         layout.addStretch()
 
 
+class GuidResolverWorker(QObject):
+    """Background worker for async GUID resolution."""
+
+    resolved = Signal(str, str, str)  # guid, name, asset_type
+
+    def __init__(self, guid_resolver: "GuidResolver", parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._resolver = guid_resolver
+
+    def resolve(self, guid: str) -> None:
+        """Resolve GUID in background and emit result."""
+        if self._resolver:
+            name, asset_type = self._resolver.resolve_with_type(guid)
+            self.resolved.emit(guid, name or "", asset_type or "Asset")
+
+
 class ReferenceFieldWidget(QWidget):
-    """Unity-style object reference field with click-to-navigate support."""
+    """Unity-style object reference field with click-to-navigate support.
+
+    Uses async GUID resolution to avoid blocking the UI for external references.
+    """
 
     # Signals for navigation
     reference_clicked = Signal(str, str)  # file_id, guid
@@ -817,47 +836,70 @@ class ReferenceFieldWidget(QWidget):
         self._value = value
         self._document = document
         self._guid_resolver = guid_resolver
+        self._ref_btn: Optional[QPushButton] = None
+        self._pending_guid: Optional[str] = None
         self._setup_ui(value, is_modified, old_value)
 
-    def _resolve_reference(self, value: dict) -> str:
-        """Resolve a reference to a display name like 'ObjectName (ComponentType)'."""
+    def _resolve_reference(self, value: dict, check_cache_only: bool = False) -> tuple[str, bool]:
+        """Resolve a reference to a display name.
+
+        Args:
+            value: Reference dict with fileID and optional guid
+            check_cache_only: If True, return placeholder for cache misses
+
+        Returns:
+            Tuple of (display_name, is_resolved)
+            is_resolved is False if we need async resolution
+        """
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
 
         if file_id == 0:
-            return "None"
+            return "None", True
 
         # External reference (has GUID)
         if guid:
-            # Try to resolve using GUID resolver
+            # Try to resolve using GUID resolver - now uses SQLite cache
             if self._guid_resolver:
+                # Check if already in memory cache (O(1))
+                if guid.lower() in self._guid_resolver._cache:
+                    name = self._guid_resolver._cache[guid.lower()]
+                    if name:
+                        asset_type = self._guid_resolver._guess_asset_type(name)
+                        return f"{name} ({asset_type})", True
+
+                if check_cache_only:
+                    # Return placeholder, needs async resolution
+                    self._pending_guid = guid
+                    return f"Loading... ({guid[:8]}...)", False
+
+                # Fallback to sync resolution (should be fast with SQLite cache)
                 name, asset_type = self._guid_resolver.resolve_with_type(guid)
                 if name:
-                    return f"{name} ({asset_type})"
-            # Fallback to showing partial GUID
-            return f"External Asset ({guid[:8]}...)"
+                    return f"{name} ({asset_type})", True
 
-        # Internal reference - try to resolve from document
+            # Fallback to showing partial GUID
+            return f"External Asset ({guid[:8]}...)", True
+
+        # Internal reference - try to resolve from document (always fast)
         if self._document:
             file_id_str = str(file_id)
             # Check if it's a GameObject
             go = self._document.all_objects.get(file_id_str)
             if go:
-                return f"{go.name} (GameObject)"
+                return f"{go.name} (GameObject)", True
 
             # Check if it's a Component - use O(1) reverse lookup
             comp = self._document.all_components.get(file_id_str)
             if comp:
-                # Use get_component_owner for O(1) lookup instead of O(n×m) iteration
                 owner = self._document.get_component_owner(file_id_str)
                 comp_name = comp.script_name or comp.type_name
                 if owner:
-                    return f"{owner.name} ({comp_name})"
-                # Component found but no owner
-                return f"({comp_name})"
+                    return f"{owner.name} ({comp_name})", True
+                return f"({comp_name})", True
 
         # Fallback
-        return f"(ID: {file_id})"
+        return f"(ID: {file_id})", True
 
     def _setup_ui(
         self,
@@ -871,16 +913,16 @@ class ReferenceFieldWidget(QWidget):
 
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
-        display = self._resolve_reference(value)
+        display, is_resolved = self._resolve_reference(value)
 
         # Create clickable button for non-None references
         if file_id != 0:
-            ref_btn = QPushButton(display)
-            ref_btn.setFlat(True)
-            ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._ref_btn = QPushButton(display)
+            self._ref_btn.setFlat(True)
+            self._ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
             if is_modified:
-                ref_btn.setStyleSheet(
+                self._ref_btn.setStyleSheet(
                     f"QPushButton {{ background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
                     f"color: {DiffColors.MODIFIED_FG.name()}; "
                     "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
@@ -888,15 +930,15 @@ class ReferenceFieldWidget(QWidget):
                     "QPushButton:hover { background-color: #4a4a4a; }"
                 )
             else:
-                ref_btn.setStyleSheet(
+                self._ref_btn.setStyleSheet(
                     "QPushButton { background-color: #3c3c3c; color: #7eb8ff; "
                     "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
                     "text-align: left; border: none; } "
                     "QPushButton:hover { background-color: #4a4a4a; text-decoration: underline; }"
                 )
 
-            ref_btn.clicked.connect(lambda: self._on_click(value))
-            layout.addWidget(ref_btn, 1)
+            self._ref_btn.clicked.connect(lambda: self._on_click(value))
+            layout.addWidget(self._ref_btn, 1)
         else:
             # None reference - just show label
             ref_label = QLabel(display)
@@ -913,7 +955,7 @@ class ReferenceFieldWidget(QWidget):
             arrow.setStyleSheet("color: #666; font-size: 11px;")
             layout.addWidget(arrow)
 
-            old_display = self._resolve_reference(old_value)
+            old_display, _ = self._resolve_reference(old_value)
             old_field = QLabel(old_display)
             old_field.setStyleSheet(
                 "background-color: #2a2a2a; color: #666; "
@@ -1031,6 +1073,9 @@ class ComponentWidget(QFrame):
 
     Shows component header with expand/collapse button and property list.
     Supports Normal mode (Unity Inspector style) and Debug mode (all properties).
+
+    Uses lazy loading: property widgets are only created when the component
+    is expanded for the first time, improving initial display performance.
     """
 
     # Signals for reference navigation
@@ -1045,6 +1090,7 @@ class ComponentWidget(QFrame):
         document: Optional[Any] = None,  # UnityDocument for resolving refs
         guid_resolver: Optional[GuidResolver] = None,
         parent: Optional[QWidget] = None,
+        start_expanded: bool = True,
     ):
         super().__init__(parent)
         self._component = component
@@ -1052,7 +1098,8 @@ class ComponentWidget(QFrame):
         self._debug_mode = debug_mode
         self._document = document
         self._guid_resolver = guid_resolver
-        self._is_expanded = True
+        self._is_expanded = start_expanded
+        self._properties_populated = False  # Lazy loading flag
         self._property_widgets: list[QWidget] = []
         self._setup_ui()
 
@@ -1083,7 +1130,12 @@ class ComponentWidget(QFrame):
         self._properties_layout.setContentsMargins(0, 4, 0, 4)
         self._properties_layout.setSpacing(0)
 
-        self._populate_properties()
+        # Lazy loading: only populate if starting expanded
+        if self._is_expanded:
+            self._populate_properties()
+        else:
+            self._properties_container.setVisible(False)
+
         layout.addWidget(self._properties_container)
 
     def _create_header(self) -> QWidget:
@@ -1198,7 +1250,9 @@ class ComponentWidget(QFrame):
         return badges.get(status, "")
 
     def _populate_properties(self) -> None:
-        """Populate the properties list based on Normal/Debug mode."""
+        """Populate the properties list based on Normal/Debug mode (lazy loaded)."""
+        self._properties_populated = True
+
         other_props = {}
         if self._other_component:
             other_props = {p.path: p for p in self._other_component.properties}
@@ -1365,8 +1419,13 @@ class ComponentWidget(QFrame):
         return {k: v for k, v in groups.items() if v}
 
     def _toggle_expand(self) -> None:
-        """Toggle expanded/collapsed state."""
+        """Toggle expanded/collapsed state with lazy property loading."""
         self._is_expanded = not self._is_expanded
+
+        # Lazy loading: populate properties on first expand
+        if self._is_expanded and not self._properties_populated:
+            self._populate_properties()
+
         self._properties_container.setVisible(self._is_expanded)
         self._expand_btn.setArrowType(
             Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
@@ -1644,15 +1703,25 @@ class InspectorWidget(QScrollArea):
         if self._other_object:
             other_components = {c.file_id: c for c in self._other_object.components}
 
-        # Add component widgets
+        # Add component widgets with smart expansion:
+        # - Transform/RectTransform: always expanded (most common to view)
+        # - Modified/Added/Removed components: expanded (show changes)
+        # - Other components: collapsed (lazy load when user expands)
         for component in self._game_object.components:
             other_comp = other_components.get(component.file_id)
+
+            # Determine if component should start expanded
+            is_transform = component.type_name in ("Transform", "RectTransform")
+            has_changes = component.diff_status != DiffStatus.UNCHANGED
+            start_expanded = is_transform or has_changes
+
             widget = ComponentWidget(
                 component,
                 other_comp,
                 debug_mode=self._debug_mode,
                 document=self._document,
                 guid_resolver=self._guid_resolver,
+                start_expanded=start_expanded,
             )
             # Forward reference signals to InspectorWidget
             widget.reference_clicked.connect(self.reference_clicked)

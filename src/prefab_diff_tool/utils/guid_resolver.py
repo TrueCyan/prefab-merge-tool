@@ -2,6 +2,7 @@
 Unity GUID resolver for finding asset names from GUIDs.
 
 Searches Unity project .meta files to resolve GUIDs to actual asset names.
+Uses SQLite-based persistent cache for fast incremental updates.
 """
 
 import os
@@ -9,6 +10,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
+
+from prefab_diff_tool.utils.cache import GuidCache
 
 # Progress callback type: (current, total, message) -> None
 ProgressCallback = Callable[[int, int, str], None]
@@ -18,7 +21,10 @@ class GuidResolver:
     """
     Resolves Unity GUIDs to asset names by searching .meta files.
 
-    Caches results for performance. Supports auto-indexing for bulk lookups.
+    Uses SQLite-based persistent cache for:
+    - Fast startup from cached data
+    - Incremental updates (only process changed files)
+    - Cross-session persistence
     """
 
     # Pattern to extract GUID from .meta file content
@@ -39,6 +45,11 @@ class GuidResolver:
         self._path_cache: dict[str, Optional[Path]] = {}  # guid -> full asset path
         self._indexed = False
         self._auto_index = auto_index
+        self._db_cache: Optional[GuidCache] = None
+
+        # Initialize persistent cache if project root is set
+        if project_root:
+            self._init_db_cache(project_root)
 
     @staticmethod
     def find_project_root(file_path: Path) -> Optional[Path]:
@@ -76,8 +87,23 @@ class GuidResolver:
 
         return None
 
+    def _init_db_cache(self, project_root: Path) -> None:
+        """Initialize SQLite-based persistent cache."""
+        try:
+            self._db_cache = GuidCache(project_root)
+            # Load existing cache into memory for O(1) lookups
+            cached_entries = self._db_cache.get_all()
+            for guid, (name, path) in cached_entries.items():
+                self._cache[guid] = name
+                self._path_cache[guid] = path
+            if cached_entries:
+                self._indexed = True  # Mark as indexed if we have cached data
+        except Exception:
+            # Fall back to memory-only cache if DB fails
+            self._db_cache = None
+
     def set_project_root(self, project_root: Path, auto_index: bool = True) -> None:
-        """Set project root and clear cache.
+        """Set project root and initialize cache.
 
         Args:
             project_root: Unity project root path.
@@ -90,26 +116,36 @@ class GuidResolver:
             self._indexed = False
             self._auto_index = auto_index
 
+            # Initialize persistent cache
+            self._init_db_cache(project_root)
+
     def index_project(
         self,
         progress_callback: Optional[ProgressCallback] = None,
         max_workers: Optional[int] = None,
+        force_full: bool = False,
     ) -> None:
         """
-        Index all .meta files in the project for fast GUID lookup.
+        Index .meta files for fast GUID lookup with incremental updates.
 
-        Call this once after setting project root for better performance
-        when resolving many GUIDs.
+        Uses SQLite cache to only process changed/new files since last index.
 
         Args:
             progress_callback: Optional callback for progress updates.
                               Called with (current, total, message).
             max_workers: Max threads for parallel processing.
                         Defaults to min(32, cpu_count + 4).
+            force_full: If True, ignore cache and do full re-index.
         """
-        if not self._project_root or self._indexed:
+        if not self._project_root:
             if progress_callback:
-                progress_callback(1, 1, "Already indexed")
+                progress_callback(1, 1, "No project root set")
+            return
+
+        # If already indexed in memory and not forcing full re-index, skip
+        if self._indexed and not force_full and self._cache:
+            if progress_callback:
+                progress_callback(1, 1, f"Using cached index: {len(self._cache)} assets")
             return
 
         assets_path = self._project_root / "Assets"
@@ -135,15 +171,42 @@ class GuidResolver:
                     if filename.endswith(".meta"):
                         meta_files.append(Path(root) / filename)
 
-        total = len(meta_files)
-        if total == 0:
+        total_files = len(meta_files)
+        if total_files == 0:
             self._indexed = True
             if progress_callback:
                 progress_callback(1, 1, "No .meta files found")
             return
 
+        # Determine which files need processing (incremental update)
+        files_to_process: list[Path] = meta_files
+        guids_to_delete: list[str] = []
+
+        if self._db_cache and not force_full:
+            if progress_callback:
+                progress_callback(0, 0, "Checking for changes...")
+
+            files_to_process, guids_to_delete = self._db_cache.get_stale_entries(meta_files)
+
+            # Delete stale entries
+            if guids_to_delete:
+                self._db_cache.delete_guids(guids_to_delete)
+                for guid in guids_to_delete:
+                    self._cache.pop(guid, None)
+                    self._path_cache.pop(guid, None)
+
+        total = len(files_to_process)
+        if total == 0:
+            self._indexed = True
+            if progress_callback:
+                progress_callback(1, 1, f"Cache up-to-date: {len(self._cache)} assets")
+            return
+
         if progress_callback:
-            progress_callback(0, total, f"Indexing {total} assets...")
+            if total < total_files:
+                progress_callback(0, total, f"Updating {total} changed assets...")
+            else:
+                progress_callback(0, total, f"Indexing {total} assets...")
 
         # Use parallel processing for file I/O
         if max_workers is None:
@@ -151,27 +214,34 @@ class GuidResolver:
 
         processed = 0
         batch_size = max(1, total // 100)  # Update progress ~100 times
+        new_entries: list[tuple[str, str, Path, Path, float]] = []
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_path = {
-                executor.submit(self._process_meta_file, meta_file): meta_file
-                for meta_file in meta_files
+                executor.submit(self._process_meta_file_with_mtime, meta_file): meta_file
+                for meta_file in files_to_process
             }
 
             # Process results as they complete
             for future in as_completed(future_to_path):
                 result = future.result()
                 if result:
-                    guid, asset_name, asset_path = result
+                    guid, asset_name, asset_path, meta_path, mtime = result
                     self._cache[guid] = asset_name
                     self._path_cache[guid] = asset_path
+                    new_entries.append((guid, asset_name, asset_path, meta_path, mtime))
 
                 processed += 1
 
                 # Periodic progress callback
                 if progress_callback and processed % batch_size == 0:
                     progress_callback(processed, total, f"Indexed {processed}/{total} assets")
+
+        # Batch save to SQLite cache
+        if self._db_cache and new_entries:
+            self._db_cache.set_many(new_entries)
+            self._db_cache.set_last_index_time()
 
         self._indexed = True
 
@@ -191,6 +261,26 @@ class GuidResolver:
                     asset_name = asset_path.name
 
                 return (guid, asset_name, asset_path)
+        except OSError:
+            pass
+        return None
+
+    def _process_meta_file_with_mtime(
+        self, meta_file: Path
+    ) -> Optional[tuple[str, str, Path, Path, float]]:
+        """Process a .meta file and return (guid, asset_name, asset_path, meta_path, mtime)."""
+        try:
+            mtime = meta_file.stat().st_mtime
+            guid = self._extract_guid_from_meta(meta_file)
+            if guid:
+                asset_path = meta_file.with_suffix("")
+                asset_name = asset_path.stem
+
+                # Include extension for non-script assets
+                if asset_path.suffix and asset_path.suffix != ".cs":
+                    asset_name = asset_path.name
+
+                return (guid, asset_name, asset_path, meta_file, mtime)
         except OSError:
             pass
         return None
@@ -399,10 +489,18 @@ class GuidResolver:
         return "Asset"
 
     def clear_cache(self) -> None:
-        """Clear the GUID cache."""
+        """Clear the GUID cache (both memory and persistent)."""
         self._cache.clear()
         self._path_cache.clear()
         self._indexed = False
+        if self._db_cache:
+            self._db_cache.clear()
+
+    def close(self) -> None:
+        """Close database connection and cleanup resources."""
+        if self._db_cache:
+            self._db_cache.close()
+            self._db_cache = None
 
 
 # Global resolver instance for convenience
