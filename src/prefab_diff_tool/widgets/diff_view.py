@@ -206,9 +206,9 @@ class DiffView(QWidget):
             self._loading_worker.cancel()
             self._loading_worker.wait()
 
-        # Start async loading
+        # Start async loading with polling-based progress
         self._loading_worker = FileLoadingWorker([left, right], unity_root=self._unity_root)
-        self._loading_worker.progress.connect(self._on_loading_progress)
+        self._loading_widget.start_polling(self._loading_worker.progress_state)
         self._loading_worker.file_loaded.connect(self._on_file_loaded)
         self._loading_worker.indexing_started.connect(self._on_indexing_started)
         self._loading_worker.finished.connect(self._on_loading_finished)
@@ -232,6 +232,9 @@ class DiffView(QWidget):
 
     def _on_loading_finished(self) -> None:
         """Handle loading completion."""
+        # Stop polling
+        self._loading_widget.stop_polling()
+
         try:
             # Get GUID resolver from worker
             if self._loading_worker:
@@ -264,6 +267,9 @@ class DiffView(QWidget):
 
     def _on_loading_error(self, error: str) -> None:
         """Handle loading error."""
+        # Stop polling
+        self._loading_widget.stop_polling()
+
         print(f"Error loading diff: {error}")
         self._loading_widget.update_progress(0, 1, f"Error: {error}")
         # Switch to content view after a delay
