@@ -198,6 +198,7 @@ class GuidCache:
     def get_stale_entries(
         self,
         meta_files: list[Path],
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> tuple[list[Path], list[str]]:
         """
         Find which meta files need re-indexing.
@@ -206,6 +207,7 @@ class GuidCache:
 
         Args:
             meta_files: List of .meta file paths to check
+            progress_callback: Optional callback for progress updates (current, total, message)
 
         Returns:
             Tuple of (files_to_update, guids_to_delete):
@@ -222,8 +224,12 @@ class GuidCache:
         # Find files that need updating
         files_to_update: list[Path] = []
         current_paths = set()
+        total = len(meta_files)
 
-        for meta_path in meta_files:
+        # Counter-based progress updates (avoid time.time() overhead)
+        update_interval = max(1, total // 100)  # ~100 updates
+
+        for i, meta_path in enumerate(meta_files):
             path_str = str(meta_path)
             current_paths.add(path_str)
 
@@ -239,6 +245,10 @@ class GuidCache:
             elif cached_entry[0] < current_mtime:
                 # Modified file
                 files_to_update.append(meta_path)
+
+            # Counter-based progress updates
+            if progress_callback and i % update_interval == 0:
+                progress_callback(i + 1, total, f"변경 확인 중... {i + 1:,}/{total:,}")
 
         # Find deleted files
         guids_to_delete: list[str] = []

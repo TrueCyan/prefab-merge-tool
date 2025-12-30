@@ -272,14 +272,10 @@ class FileLoadingWorker(QThread):
         if packages_path.exists():
             search_paths.append(packages_path)
 
-        # Count directories for progress estimation
-        total_dirs = 0
-        for sp in search_paths:
-            for _, dirs, _ in os.walk(sp):
-                total_dirs += 1
-                break  # Just count top level for estimation
-
+        # Progress updates every N directories (avoid time.time() overhead)
         scanned_dirs = 0
+        update_interval = 50  # Update every 50 directories
+
         for search_path in search_paths:
             for root, dirs, files in os.walk(search_path):
                 if self._cancelled:
@@ -288,10 +284,13 @@ class FileLoadingWorker(QThread):
                     if filename.endswith(".meta"):
                         meta_files.append(Path(root) / filename)
                 scanned_dirs += 1
-                if scanned_dirs % 100 == 0:
+
+                # Simple counter-based updates (no time.time() overhead)
+                if scanned_dirs % update_interval == 0:
+                    found = len(meta_files)
                     self._emit_progress(
-                        (len(meta_files), len(meta_files) + 1000),
-                        f".meta 파일 검색 중... {len(meta_files):,}개 발견"
+                        (found, max(found * 2, 1000)),
+                        f".meta 파일 검색 중... {found:,}개 발견"
                     )
 
         total_meta = len(meta_files)
@@ -310,9 +309,13 @@ class FileLoadingWorker(QThread):
         if resolver._db_cache:
             self._emit_progress((0, 1), "변경 사항 확인 중...")
 
+            # Progress callback for change detection
+            def on_change_progress(current: int, total: int, message: str) -> None:
+                self._emit_progress((current, total), message)
+
             # Get stale entries with progress
             files_to_process, guids_to_delete = resolver._db_cache.get_stale_entries(
-                meta_files
+                meta_files, progress_callback=on_change_progress
             )
 
             # Delete stale entries
