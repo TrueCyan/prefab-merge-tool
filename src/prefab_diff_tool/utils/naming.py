@@ -240,20 +240,31 @@ COMPONENT_DISPLAY_NAMES = {
 }
 
 
-def get_component_display_name(type_name: str, script_name: str | None = None) -> str:
+def get_component_display_name(
+    type_name: str,
+    script_name: str | None = None,
+    script_guid: str | None = None,
+) -> str:
     """
     Get display name for a component type.
 
     Args:
         type_name: The component type name (e.g., "MonoBehaviour")
         script_name: Optional script name for MonoBehaviour components
+        script_guid: Optional script GUID for MonoBehaviour when name is unknown
 
     Returns:
         Display name for the component
     """
-    if type_name == "MonoBehaviour" and script_name:
-        # For MonoBehaviour, use the script name with nicification
-        return nicify_variable_name(script_name)
+    if type_name == "MonoBehaviour":
+        if script_name:
+            # For MonoBehaviour, use the script name with nicification
+            return nicify_variable_name(script_name)
+        elif script_guid:
+            # Show partial GUID when script name couldn't be resolved
+            return f"Script ({script_guid[:8]}...)"
+        else:
+            return "Script (Missing)"
 
     return COMPONENT_DISPLAY_NAMES.get(type_name, nicify_variable_name(type_name))
 

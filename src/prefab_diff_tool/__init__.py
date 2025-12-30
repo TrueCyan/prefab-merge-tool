@@ -2,7 +2,7 @@
 prefab-diff-tool: Visual diff and merge tool for Unity prefab files.
 """
 
-__version__ = "0.1.13"
+__version__ = "0.1.14"
 __author__ = "TrueCyan"
 
 from prefab_diff_tool.core.unity_model import (

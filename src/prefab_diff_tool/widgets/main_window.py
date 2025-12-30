@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QWidget,
     QVBoxLayout,
+    QToolBar,
+    QToolButton,
 )
 
 from prefab_diff_tool import __version__
@@ -34,39 +36,43 @@ UNITY_FILE_FILTER = (
 
 class MainWindow(QMainWindow):
     """Main application window."""
-    
-    def __init__(self, parent: Optional[QWidget] = None):
+
+    def __init__(self, parent: Optional[QWidget] = None, unity_root: Optional[Path] = None):
         super().__init__(parent)
-        
+
         self.setWindowTitle("prefab-diff-tool")
         self.setMinimumSize(1200, 800)
-        
+
+        # Unity project root (for GUID resolution)
+        self._unity_root = unity_root
+
         # Restore window geometry
         self._load_settings()
-        
+
         # Central widget with stacked views
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
-        
+
         # Welcome page
         self._welcome = self._create_welcome_page()
         self._stack.addWidget(self._welcome)
-        
+
         # Diff view (created on demand)
         self._diff_view: Optional[DiffView] = None
-        
+
         # Merge view (created on demand)
         self._merge_view: Optional[MergeView] = None
-        
+
         # Current file paths
         self._current_files: list[Path] = []
         self._output_file: Optional[Path] = None
-        
+
         # Enable drag and drop
         self.setAcceptDrops(True)
 
         # Setup UI
         self._setup_menu_bar()
+        self._setup_toolbar()
         self._setup_status_bar()
     
     def _create_welcome_page(self) -> QWidget:
@@ -166,15 +172,69 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
     
+    def _setup_toolbar(self) -> None:
+        """Setup the navigation toolbar."""
+        self._toolbar = QToolBar("Navigation")
+        self._toolbar.setMovable(False)
+        self._toolbar.setStyleSheet(
+            "QToolBar { background: #353535; border: none; padding: 2px; spacing: 4px; }"
+            "QToolButton { background: #454545; border: 1px solid #555; border-radius: 4px; "
+            "padding: 4px 8px; color: #ddd; font-size: 11px; }"
+            "QToolButton:hover { background: #505050; }"
+            "QToolButton:pressed { background: #404040; }"
+            "QToolButton:disabled { color: #666; background: #3a3a3a; }"
+        )
+        self.addToolBar(self._toolbar)
+
+        # Previous change button
+        self._prev_btn = QToolButton()
+        self._prev_btn.setText("◀ 이전")
+        self._prev_btn.setToolTip("이전 변경으로 이동 (P)")
+        self._prev_btn.clicked.connect(self._on_prev_change)
+        self._toolbar.addWidget(self._prev_btn)
+
+        # Next change button
+        self._next_btn = QToolButton()
+        self._next_btn.setText("다음 ▶")
+        self._next_btn.setToolTip("다음 변경으로 이동 (N)")
+        self._next_btn.clicked.connect(self._on_next_change)
+        self._toolbar.addWidget(self._next_btn)
+
+        self._toolbar.addSeparator()
+
+        # Accept all ours button (merge mode only)
+        self._all_ours_btn = QToolButton()
+        self._all_ours_btn.setText("모두 Ours")
+        self._all_ours_btn.setToolTip("모든 충돌을 Ours로 해결")
+        self._all_ours_btn.clicked.connect(self._on_accept_all_ours)
+        self._all_ours_btn.setVisible(False)
+        self._toolbar.addWidget(self._all_ours_btn)
+
+        # Accept all theirs button (merge mode only)
+        self._all_theirs_btn = QToolButton()
+        self._all_theirs_btn.setText("모두 Theirs")
+        self._all_theirs_btn.setToolTip("모든 충돌을 Theirs로 해결")
+        self._all_theirs_btn.clicked.connect(self._on_accept_all_theirs)
+        self._all_theirs_btn.setVisible(False)
+        self._toolbar.addWidget(self._all_theirs_btn)
+
+        # Next conflict button (merge mode only)
+        self._next_conflict_btn = QToolButton()
+        self._next_conflict_btn.setText("다음 충돌 ▶")
+        self._next_conflict_btn.setToolTip("다음 미해결 충돌로 이동")
+        self._next_conflict_btn.clicked.connect(self._on_next_conflict)
+        self._next_conflict_btn.setVisible(False)
+        self._toolbar.addWidget(self._next_conflict_btn)
+
     def _setup_status_bar(self) -> None:
         """Setup the status bar."""
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
-        
+
         # Status label
         self._status_label = QLabel("준비")
         self._status_bar.addWidget(self._status_label)
-        
+
         # Change summary label (right side)
         self._summary_label = QLabel("")
         self._status_bar.addPermanentWidget(self._summary_label)
@@ -287,17 +347,22 @@ class MainWindow(QMainWindow):
     def open_diff(self, left: Path, right: Path) -> None:
         """Open two files for diff comparison."""
         self._current_files = [left, right]
-        
+
         # Create diff view if needed
         if not self._diff_view:
-            self._diff_view = DiffView()
+            self._diff_view = DiffView(unity_root=self._unity_root)
             self._diff_view.change_selected.connect(self._on_change_selected)
             self._stack.addWidget(self._diff_view)
-        
+
         # Load files
         self._diff_view.load_diff(left, right)
         self._stack.setCurrentWidget(self._diff_view)
-        
+
+        # Show diff toolbar buttons, hide merge buttons
+        self._all_ours_btn.setVisible(False)
+        self._all_theirs_btn.setVisible(False)
+        self._next_conflict_btn.setVisible(False)
+
         self.setWindowTitle(f"Diff: {left.name} ↔ {right.name}")
         self._status_label.setText(f"{left.name} ↔ {right.name}")
         self._update_summary()
@@ -306,17 +371,22 @@ class MainWindow(QMainWindow):
         """Open files for 3-way merge."""
         self._current_files = [base, ours, theirs]
         self._output_file = output
-        
+
         # Create merge view if needed
         if not self._merge_view:
-            self._merge_view = MergeView()
+            self._merge_view = MergeView(unity_root=self._unity_root)
             self._merge_view.conflict_resolved.connect(self._on_conflict_resolved)
             self._stack.addWidget(self._merge_view)
-        
+
         # Load files
         self._merge_view.load_merge(base, ours, theirs)
         self._stack.setCurrentWidget(self._merge_view)
-        
+
+        # Show merge toolbar buttons
+        self._all_ours_btn.setVisible(True)
+        self._all_theirs_btn.setVisible(True)
+        self._next_conflict_btn.setVisible(True)
+
         self._save_action.setEnabled(True)
         self.setWindowTitle(f"Merge: {ours.name}")
         self._status_label.setText(f"Merge: {base.name} | {ours.name} | {theirs.name}")
@@ -434,7 +504,24 @@ class MainWindow(QMainWindow):
         current = self._stack.currentWidget()
         if hasattr(current, "collapse_all"):
             current.collapse_all()
-    
+
+    def _on_accept_all_ours(self) -> None:
+        """Accept all Ours for merge conflicts."""
+        if self._merge_view:
+            self._merge_view.accept_all_ours()
+            self._update_summary()
+
+    def _on_accept_all_theirs(self) -> None:
+        """Accept all Theirs for merge conflicts."""
+        if self._merge_view:
+            self._merge_view.accept_all_theirs()
+            self._update_summary()
+
+    def _on_next_conflict(self) -> None:
+        """Navigate to next unresolved conflict."""
+        if self._merge_view:
+            self._merge_view.goto_next_unresolved_conflict()
+
     def _on_about(self) -> None:
         """Show about dialog."""
         QMessageBox.about(

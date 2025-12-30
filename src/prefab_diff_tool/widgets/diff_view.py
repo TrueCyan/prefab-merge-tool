@@ -59,7 +59,7 @@ class DiffView(QWidget):
     loading_started = Signal()
     loading_finished = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, unity_root: Optional[Path] = None):
         super().__init__(parent)
 
         self._left_path: Optional[Path] = None
@@ -70,6 +70,7 @@ class DiffView(QWidget):
         self._changes: list[Change] = []
         self._current_change_index: int = -1
         self._guid_resolver: Optional[GuidResolver] = None
+        self._unity_root: Optional[Path] = unity_root
 
         self._left_model = HierarchyTreeModel()
         self._right_model = HierarchyTreeModel()
@@ -150,6 +151,11 @@ class DiffView(QWidget):
         right_tree_layout.addWidget(self._right_tree)
 
         tree_splitter.addWidget(right_tree_container)
+
+        # Synchronize scrolling between left and right trees
+        self._sync_scroll_enabled = True
+        self._left_tree.verticalScrollBar().valueChanged.connect(self._on_left_scroll)
+        self._right_tree.verticalScrollBar().valueChanged.connect(self._on_right_scroll)
 
         hierarchy_layout.addWidget(tree_splitter)
         splitter.addWidget(hierarchy_container)
@@ -364,22 +370,40 @@ class DiffView(QWidget):
             summary=summary,
         )
 
+    def _on_left_scroll(self, value: int) -> None:
+        """Sync right tree scroll when left tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._right_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
+
+    def _on_right_scroll(self, value: int) -> None:
+        """Sync left tree scroll when right tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._left_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
+
     def _on_left_tree_clicked(self, index) -> None:
-        """Handle left tree selection - show GameObject in inspector."""
+        """Handle left tree selection - show GameObject in inspector (uses right doc for display)."""
         data = index.data(Qt.ItemDataRole.UserRole)
         if isinstance(data, UnityGameObject):
-            other_obj = None
+            # Always use right document for display (unified style)
+            right_obj = None
             if self._right_doc:
-                other_obj = self._right_doc.get_object(data.file_id)
-            # Set document for resolving references (use left doc for left tree)
-            self._inspector.set_document(self._left_doc)
-            self._inspector.set_game_object(data, other_obj)
+                right_obj = self._right_doc.get_object(data.file_id)
+            # If object exists in right doc, display that; otherwise show left
+            if right_obj:
+                self._inspector.set_document(self._right_doc)
+                self._inspector.set_game_object(right_obj, data)
+            else:
+                self._inspector.set_document(self._left_doc)
+                self._inspector.set_game_object(data, None)
 
             # Sync selection with right tree
             right_index = self._right_model.find_index_by_file_id(data.file_id)
             if right_index.isValid():
                 self._right_tree.setCurrentIndex(right_index)
-                self._right_tree.scrollTo(right_index)
 
     def _on_right_tree_clicked(self, index) -> None:
         """Handle right tree selection - show GameObject in inspector."""
@@ -392,11 +416,10 @@ class DiffView(QWidget):
             self._inspector.set_document(self._right_doc)
             self._inspector.set_game_object(data, other_obj)
 
-            # Sync selection with left tree
+            # Sync selection with left tree (scroll is auto-synced)
             left_index = self._left_model.find_index_by_file_id(data.file_id)
             if left_index.isValid():
                 self._left_tree.setCurrentIndex(left_index)
-                self._left_tree.scrollTo(left_index)
 
     def get_summary(self) -> DiffViewSummary:
         """Get summary for status bar."""
@@ -424,11 +447,12 @@ class DiffView(QWidget):
         self._select_change(self._current_change_index)
 
     def _select_change(self, index: int) -> None:
-        """Select and scroll to a change."""
+        """Select and scroll to a change, updating inspector with scroll to modified property."""
         if 0 <= index < len(self._changes):
             change = self._changes[index]
 
             if change.object_id:
+                # Select and scroll in trees
                 right_index = self._right_model.find_index_by_file_id(change.object_id)
                 if right_index.isValid():
                     self._right_tree.setCurrentIndex(right_index)
@@ -437,7 +461,26 @@ class DiffView(QWidget):
                 left_index = self._left_model.find_index_by_file_id(change.object_id)
                 if left_index.isValid():
                     self._left_tree.setCurrentIndex(left_index)
-                    self._left_tree.scrollTo(left_index)
+
+                # Update inspector with the selected object
+                if self._right_doc:
+                    right_obj = self._right_doc.get_object(change.object_id)
+                    if right_obj:
+                        other_obj = None
+                        if self._left_doc:
+                            other_obj = self._left_doc.get_object(change.object_id)
+                        self._inspector.set_document(self._right_doc)
+                        self._inspector.set_game_object(right_obj, other_obj)
+
+                        # If change has component_type, scroll to first modified property
+                        if change.component_type:
+                            # Find the component with modifications
+                            for comp in right_obj.components:
+                                if comp.type_name == change.component_type or (
+                                    comp.script_name and comp.script_name == change.component_type
+                                ):
+                                    QTimer.singleShot(0, lambda fid=comp.file_id: self._inspector.scroll_to_component(fid))
+                                    break
 
             self.change_selected.emit(change.path)
 
