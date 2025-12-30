@@ -226,8 +226,8 @@ class GuidCache:
         current_paths = set()
         total = len(meta_files)
 
-        # Counter-based progress updates (avoid time.time() overhead)
-        update_interval = max(1, total // 100)  # ~100 updates
+        # Counter-based progress updates (minimize signal overhead)
+        update_interval = max(1000, total // 20)  # ~20 updates max
 
         for i, meta_path in enumerate(meta_files):
             path_str = str(meta_path)
@@ -246,9 +246,9 @@ class GuidCache:
                 # Modified file
                 files_to_update.append(meta_path)
 
-            # Counter-based progress updates
-            if progress_callback and i % update_interval == 0:
-                progress_callback(i + 1, total, f"변경 확인 중... {i + 1:,}/{total:,}")
+            # Less frequent progress updates to reduce Qt signal overhead
+            if progress_callback and i % update_interval == 0 and i > 0:
+                progress_callback(i, total, f"변경 확인 중... {i:,}/{total:,}")
 
         # Find deleted files
         guids_to_delete: list[str] = []

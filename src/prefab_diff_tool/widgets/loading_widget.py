@@ -272,9 +272,10 @@ class FileLoadingWorker(QThread):
         if packages_path.exists():
             search_paths.append(packages_path)
 
-        # Progress updates every N directories (avoid time.time() overhead)
+        # Progress updates every N directories (minimize signal overhead)
         scanned_dirs = 0
-        update_interval = 50  # Update every 50 directories
+        update_interval = 500  # Update every 500 directories (reduces Qt signal overhead)
+        last_reported_count = 0
 
         for search_path in search_paths:
             for root, dirs, files in os.walk(search_path):
@@ -285,13 +286,16 @@ class FileLoadingWorker(QThread):
                         meta_files.append(Path(root) / filename)
                 scanned_dirs += 1
 
-                # Simple counter-based updates (no time.time() overhead)
+                # Less frequent updates to minimize Qt signal overhead
                 if scanned_dirs % update_interval == 0:
                     found = len(meta_files)
-                    self._emit_progress(
-                        (found, max(found * 2, 1000)),
-                        f".meta 파일 검색 중... {found:,}개 발견"
-                    )
+                    # Only emit if count changed significantly
+                    if found - last_reported_count >= 1000:
+                        last_reported_count = found
+                        self._emit_progress(
+                            (found, max(found * 2, 10000)),
+                            f".meta 파일 검색 중... {found:,}개 발견"
+                        )
 
         total_meta = len(meta_files)
         self._emit_progress((1, 1), f".meta 파일 {total_meta:,}개 발견")
@@ -356,8 +360,8 @@ class FileLoadingWorker(QThread):
             processed = 0
             new_entries: list[tuple[str, str, Path, Path, float]] = []
 
-            # More frequent updates for smooth progress
-            update_interval = max(1, num_to_process // 200)
+            # Less frequent updates to reduce Qt signal overhead
+            update_interval = max(1000, num_to_process // 50)  # ~50 updates max
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_path = {
