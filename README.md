@@ -87,7 +87,21 @@ git mergetool -t prefab-diff              # merge
 
 ### Perforce 설정
 
-**P4V (Perforce Visual Client):**
+**1. 파일 타입 설정 (서버 관리자):**
+
+```
+p4 typemap
+```
+
+```
+Typemap:
+    text //depot/.../*.prefab
+    text //depot/.../*.unity
+    text //depot/.../*.asset
+    text //depot/.../*.meta
+```
+
+**2. P4V Diff/Merge 도구:**
 
 | 설정 | Application | Arguments |
 |------|-------------|-----------|
@@ -95,13 +109,6 @@ git mergetool -t prefab-diff              # merge
 | Merge | `prefab-diff` | `--merge %b %t %s -o %r` |
 
 *Edit → Preferences → Diff / Merge*
-
-**환경변수:**
-
-```bash
-export P4DIFF='prefab-diff --diff "$1" "$2"'
-export P4MERGE='prefab-diff --merge "$base" "$theirs" "$yours" -o "$result"'
-```
 
 ### GUID 추적
 
