@@ -1133,6 +1133,7 @@ class ComponentWidget(QFrame):
         # Lazy loading: only populate if starting expanded
         if self._is_expanded:
             self._populate_properties()
+            self._properties_container.setVisible(True)
         else:
             self._properties_container.setVisible(False)
 
@@ -1145,9 +1146,11 @@ class ComponentWidget(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(8)
 
-        # Expand/collapse button
+        # Expand/collapse button - reflect actual state
         self._expand_btn = QToolButton()
-        self._expand_btn.setArrowType(Qt.ArrowType.DownArrow)
+        self._expand_btn.setArrowType(
+            Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
+        )
         self._expand_btn.setAutoRaise(True)
         self._expand_btn.setFixedSize(16, 16)
         self._expand_btn.clicked.connect(self._toggle_expand)
