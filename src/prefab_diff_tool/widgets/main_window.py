@@ -167,7 +167,13 @@ class MainWindow(QMainWindow):
         
         # Help menu
         help_menu = menubar.addMenu("도움말(&H)")
-        
+
+        debug_action = QAction("디버그 정보(&D)...", self)
+        debug_action.triggered.connect(self._on_debug_info)
+        help_menu.addAction(debug_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction("정보(&A)...", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
@@ -532,7 +538,32 @@ class MainWindow(QMainWindow):
             "<p>License: MIT</p>"
             "<p><a href='https://github.com/TrueCyan/prefab-diff-tool'>GitHub</a></p>",
         )
-    
+
+    def _on_debug_info(self) -> None:
+        """Show debug information dialog."""
+        from prefab_diff_tool.utils.vcs_detector import get_vcs_info
+
+        vcs_info = get_vcs_info()
+
+        info_text = f"""<h3>디버그 정보</h3>
+<h4>Unity 프로젝트</h4>
+<pre>unity_root: {self._unity_root}</pre>
+
+<h4>현재 파일</h4>
+<pre>{chr(10).join(str(f) for f in self._current_files) or '(없음)'}</pre>
+
+<h4>Git</h4>
+<pre>GIT_WORK_TREE: {vcs_info['git']['GIT_WORK_TREE']}
+GIT_DIR: {vcs_info['git']['GIT_DIR']}
+detected: {vcs_info['git']['detected_workspace']}</pre>
+
+<h4>Perforce</h4>
+<pre>P4ROOT: {vcs_info['perforce']['P4ROOT']}
+P4CLIENT: {vcs_info['perforce']['P4CLIENT']}
+detected: {vcs_info['perforce']['detected_workspace']}</pre>
+"""
+        QMessageBox.information(self, "디버그 정보", info_text)
+
     # === Signal handlers ===
     
     def _on_change_selected(self, path: str) -> None:
