@@ -11,6 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from prefab_diff_tool import __version__
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -57,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--version", "-v",
         action="version",
-        version="%(prog)s 0.1.0",
+        version=f"%(prog)s {__version__}",
     )
     
     return parser.parse_args()
