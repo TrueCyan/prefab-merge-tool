@@ -78,11 +78,9 @@ echo "=== GUID 추적 (자동) ==="
 echo
 echo "prefab-diff는 다음 순서로 Unity 프로젝트를 자동 감지합니다:"
 echo "  1. P4ROOT 환경변수"
-echo "  2. 'p4 info'의 Client root (P4CLIENT 설정 시)"
-echo "  3. .p4config 파일 위치 (선택사항)"
+echo "  2. 'p4 info'의 Client root"
 echo
-echo "대부분의 경우 Perforce 환경변수가 설정되어 있으면"
-echo "추가 설정 없이 GUID 추적이 동작합니다."
+echo "Perforce 환경이 설정되어 있으면 추가 설정 없이 동작합니다."
 echo
 
 # === 파일 타입 설정 ===
