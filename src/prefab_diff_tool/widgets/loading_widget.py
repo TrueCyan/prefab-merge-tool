@@ -477,7 +477,7 @@ class LoadingProgressWidget(QWidget):
         # Ensure progress bar is in determinate mode
         self._progress_bar.setMaximum(100)
         self._progress_bar.setValue(0)
-        self._progress_bar.setFormat("0%%")  # %% escapes to literal %
+        self._progress_bar.setFormat("%p%")  # Qt native format - always synced with value
         self._phase_label.setText("[시작]")
         self._status.setText("로딩 준비 중...")
 
@@ -570,7 +570,8 @@ class LoadingProgressWidget(QWidget):
         if total > 0:
             percent = min(100, int((current / total) * 100))
             self._progress_bar.setValue(percent)
-            self._progress_bar.setFormat(f"{percent}%%")  # %% escapes to literal %
+            # Use Qt native format - text always matches bar value
+            self._progress_bar.setFormat("%p%")
         else:
             self._progress_bar.setMaximum(0)  # Indeterminate mode
 
@@ -584,8 +585,9 @@ class LoadingProgressWidget(QWidget):
         if self._progress_bar.maximum() != 100:
             self._progress_bar.setMaximum(100)
 
+        # setValue and format use Qt native %p% - guarantees sync
         self._progress_bar.setValue(min(100, percent))
-        self._progress_bar.setFormat(f"{percent}%%")  # %% escapes to literal %
+        self._progress_bar.setFormat("%p%")
 
         # Translate phase names to Korean
         phase_display = {
