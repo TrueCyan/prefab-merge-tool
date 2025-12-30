@@ -50,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--p4-client",
+        type=str,
+        help="Perforce client name for GUID resolution (P4V: %%P)",
+    )
+
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -104,7 +110,7 @@ def main() -> int:
     # 2. Auto-detect from file paths
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
-    unity_root = detect_unity_project_root(files)
+    unity_root = detect_unity_project_root(files, p4_client=args.p4_client)
 
     # Start GUI
     from prefab_diff_tool.app import run_app
