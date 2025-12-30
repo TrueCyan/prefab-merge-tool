@@ -300,8 +300,8 @@ class MergeView(QWidget):
 
     def _on_loading_error(self, error: str) -> None:
         """Handle loading error."""
-        # Stop polling
-        self._loading_widget.stop_polling()
+        # Stop polling (don't show 100% on error)
+        self._loading_widget.stop_polling(error=True)
 
         print(f"Error loading merge: {error}")
         self._loading_widget.update_progress(0, 1, f"Error: {error}")

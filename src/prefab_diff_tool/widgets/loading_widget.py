@@ -489,14 +489,21 @@ class LoadingProgressWidget(QWidget):
         self._poll_timer.timeout.connect(self._poll_progress)
         self._poll_timer.start(interval_ms)
 
-    def stop_polling(self) -> None:
-        """Stop polling for updates."""
+    def stop_polling(self, error: bool = False) -> None:
+        """Stop polling for updates.
+
+        Args:
+            error: If True, don't update to 100% (loading failed)
+        """
         if self._poll_timer:
             self._poll_timer.stop()
             self._poll_timer = None
 
-        # Do one final poll to show the final state
-        if self._progress_state:
+        # Set final state - show 100% if completed successfully
+        if not error:
+            self.update_progress_detailed(100, "Complete", "완료")
+        elif self._progress_state:
+            # On error, just show current state
             phase, percent, total, message = self._progress_state.get()
             self.update_progress_detailed(percent, phase, message)
 
@@ -647,7 +654,7 @@ class LoadingDialog(QDialog):
 
     def _on_worker_error(self, error_msg: str) -> None:
         """Handle worker error."""
-        self._progress_widget.stop_polling()
+        self._progress_widget.stop_polling(error=True)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
