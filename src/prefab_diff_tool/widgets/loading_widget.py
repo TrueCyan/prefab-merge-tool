@@ -1,7 +1,7 @@
 """
 Loading progress widget for async operations.
 
-Uses weighted phases for accurate progress display based on expected duration.
+Uses unityflow for GUID indexing with cached results.
 Progress updates are decoupled from loading logic for zero overhead.
 """
 
@@ -168,19 +168,13 @@ class IndexingWorker(QThread):
 
 class FileLoadingWorker(QThread):
     """
-    Worker thread for loading Unity files with accurate progress tracking.
+    Worker thread for loading Unity files with progress tracking.
 
     Progress updates are decoupled from loading logic:
     - Worker updates ProgressState (zero overhead, just memory write)
     - UI polls ProgressState on a timer (independent of loading speed)
 
-    Uses weighted phases based on expected duration:
-    - File loading: 5% (fast, just parsing)
-    - Cache loading: 5% (loading from SQLite)
-    - Meta scanning: 10% (finding .meta files)
-    - Change detection: 10% (checking mtimes)
-    - GUID indexing: 60% (processing .meta files)
-    - Cache saving: 10% (writing to SQLite)
+    Uses unityflow's CachedGUIDIndex for fast indexed lookups.
     """
 
     # Signals only for state changes, not progress updates
@@ -193,14 +187,10 @@ class FileLoadingWorker(QThread):
     progress_detailed = Signal(int, str, str)
     progress = Signal(int, int, str)
 
-    # Phase weights based on expected duration (17만 assets 기준)
+    # Simplified phases - unityflow handles caching internally
     PHASE_WEIGHTS = [
-        ("file_loading", 5),      # ~0.5초: 프리팹 파일 파싱
-        ("cache_loading", 10),    # ~1.5초: SQLite에서 캐시 로드
-        ("meta_scanning", 10),    # ~1.5초: .meta 파일 탐색
-        ("change_detection", 10), # ~1.5초: mtime 비교
-        ("guid_indexing", 55),    # ~8초: 변경된 파일 처리
-        ("cache_saving", 10),     # ~1.5초: SQLite 저장
+        ("file_loading", 20),   # 파일 파싱
+        ("guid_indexing", 80),  # unityflow 인덱싱 (캐시 포함)
     ]
 
     def __init__(
@@ -249,17 +239,16 @@ class FileLoadingWorker(QThread):
                 # Use first document's project root for indexing
                 if i == 0 and doc.project_root:
                     self._guid_resolver = GuidResolver()
-                    # Don't auto-index yet, we'll do it manually with progress
                     self._guid_resolver.set_project_root(
                         Path(doc.project_root), auto_index=False
                     )
 
             self._weighted_progress.complete_phase()
 
-            # Phase 2-6: GUID indexing with detailed progress
+            # Phase 2: GUID indexing using unityflow
             if self._guid_resolver and not self._cancelled:
                 self.indexing_started.emit()
-                self._run_indexing_with_progress()
+                self._run_indexing()
 
             if not self._cancelled:
                 self.finished.emit()
@@ -269,178 +258,27 @@ class FileLoadingWorker(QThread):
             traceback.print_exc()
             self.error.emit(str(e))
 
-    def _run_indexing_with_progress(self) -> None:
-        """Run GUID indexing with detailed phase progress.
-
-        Progress updates use shared ProgressState - no signal overhead.
-        """
-        resolver = self._guid_resolver
-        if not resolver or not resolver._project_root:
+    def _run_indexing(self) -> None:
+        """Run GUID indexing using unityflow's CachedGUIDIndex."""
+        if not self._guid_resolver:
             return
 
-        # Phase 2: Cache loading (already done in set_project_root, but report it)
-        self._weighted_progress.set_phase_by_name("cache_loading")
-        cache_count = len(resolver._cache)
-        if cache_count > 0:
-            self._update_progress((1, 1), f"캐시 로드 완료: {cache_count:,}개 에셋")
-        else:
-            self._update_progress((1, 1), "캐시 초기화 중...")
-        self._weighted_progress.complete_phase()
-
-        if self._cancelled:
-            return
-
-        # Phase 3: Meta file scanning (no progress callback - just update state)
-        self._weighted_progress.set_phase_by_name("meta_scanning")
-        self._update_progress((0, 1), ".meta 파일 검색 중...")
-
-        import os
-        meta_files: list[Path] = []
-        assets_path = resolver._project_root / "Assets"
-        packages_path = resolver._project_root / "Packages"
-        package_cache_path = resolver._project_root / "Library" / "PackageCache"
-
-        search_paths = []
-        if assets_path.exists():
-            search_paths.append(assets_path)
-        if packages_path.exists():
-            search_paths.append(packages_path)
-        # Library/PackageCache contains Unity packages (Button, GraphicRaycaster, etc.)
-        if package_cache_path.exists():
-            search_paths.append(package_cache_path)
-
-        # Just update state periodically - no signal overhead
-        scanned_dirs = 0
-        for search_path in search_paths:
-            for root, dirs, files in os.walk(search_path):
-                if self._cancelled:
-                    return
-                for filename in files:
-                    if filename.endswith(".meta"):
-                        meta_files.append(Path(root) / filename)
-                scanned_dirs += 1
-
-                # Update shared state every 200 dirs (UI polls this)
-                if scanned_dirs % 200 == 0:
-                    found = len(meta_files)
-                    self._update_progress(
-                        (found, max(found * 2, 10000)),
-                        f".meta 파일 검색 중... {found:,}개 발견"
-                    )
-
-        total_meta = len(meta_files)
-        self._update_progress((1, 1), f".meta 파일 {total_meta:,}개 발견")
-        self._weighted_progress.complete_phase()
-
-        if self._cancelled or total_meta == 0:
-            resolver._indexed = True
-            return
-
-        # Phase 4: Change detection (no callback needed)
-        self._weighted_progress.set_phase_by_name("change_detection")
-        files_to_process = meta_files
-        guids_to_delete: list[str] = []
-
-        if resolver._db_cache:
-            self._update_progress((0, 1), "변경 사항 확인 중...")
-
-            # No callback - just run and update state periodically
-            files_to_process, guids_to_delete = resolver._db_cache.get_stale_entries(
-                meta_files  # No progress callback - runs at full speed
-            )
-
-            # Delete stale entries
-            if guids_to_delete:
-                self._update_progress(
-                    (1, 2), f"삭제된 파일 정리 중... {len(guids_to_delete):,}개"
-                )
-                resolver._db_cache.delete_guids(guids_to_delete)
-                for guid in guids_to_delete:
-                    resolver._cache.pop(guid, None)
-                    resolver._path_cache.pop(guid, None)
-
-        num_to_process = len(files_to_process)
-        if num_to_process == 0:
-            self._update_progress((1, 1), f"캐시 최신 상태: {len(resolver._cache):,}개 에셋")
-        elif num_to_process < total_meta:
-            self._update_progress(
-                (1, 1), f"변경된 파일 {num_to_process:,}개 발견 (전체 {total_meta:,}개 중)"
-            )
-        else:
-            self._update_progress((1, 1), f"전체 인덱싱 필요: {total_meta:,}개 파일")
-
-        self._weighted_progress.complete_phase()
-
-        if self._cancelled:
-            return
-
-        # Phase 5: GUID indexing
         self._weighted_progress.set_phase_by_name("guid_indexing")
+        self._update_progress((0, 1), "에셋 인덱싱 중... (캐시 확인)")
 
-        if num_to_process == 0:
-            self._update_progress((1, 1), "인덱싱 불필요 (캐시 사용)")
-            self._weighted_progress.complete_phase()
-        else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+        # unityflow handles caching, scanning, and indexing internally
+        # This will be fast if cache is valid, slower on first run
+        self._guid_resolver.index_project(
+            progress_callback=self._on_indexing_progress,
+            include_package_cache=True,
+        )
 
-            max_workers = min(32, (os.cpu_count() or 1) + 4)
-            processed = 0
-            new_entries: list[tuple[str, str, Path, Path, float]] = []
+        self._weighted_progress.complete_phase()
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_path = {
-                    executor.submit(
-                        resolver._process_meta_file_with_mtime, meta_file
-                    ): meta_file
-                    for meta_file in files_to_process
-                }
-
-                for future in as_completed(future_to_path):
-                    if self._cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        return
-
-                    result = future.result()
-                    if result:
-                        guid, asset_name, asset_path, meta_path, mtime = result
-                        resolver._cache[guid] = asset_name
-                        resolver._path_cache[guid] = asset_path
-                        new_entries.append(
-                            (guid, asset_name, asset_path, meta_path, mtime)
-                        )
-
-                    processed += 1
-
-                    # Update shared state every 500 items (UI polls this)
-                    if processed % 500 == 0:
-                        self._update_progress(
-                            (processed, num_to_process),
-                            f"인덱싱 중... {processed:,}/{num_to_process:,}"
-                        )
-
-            self._update_progress((num_to_process, num_to_process), "인덱싱 완료")
-            self._weighted_progress.complete_phase()
-
-            if self._cancelled:
-                return
-
-            # Phase 6: Cache saving
-            self._weighted_progress.set_phase_by_name("cache_saving")
-
-            if resolver._db_cache and new_entries:
-                self._update_progress((0, 1), f"캐시 저장 중... {len(new_entries):,}개 항목")
-
-                # Batch save - no progress updates needed (fast enough)
-                resolver._db_cache.set_many(new_entries)
-                resolver._db_cache.set_last_index_time()
-                self._update_progress((1, 1), "캐시 저장 완료")
-            else:
-                self._update_progress((1, 1), "저장할 변경 사항 없음")
-
-            self._weighted_progress.complete_phase()
-
-        resolver._indexed = True
-        self._update_progress((1, 1), f"완료: {len(resolver._cache):,}개 에셋 인덱싱됨")
+    def _on_indexing_progress(self, current: int, total: int, message: str) -> None:
+        """Handle progress updates from guid_resolver."""
+        if not self._cancelled:
+            self._update_progress((current, total), message)
 
     def cancel(self) -> None:
         """Request cancellation."""
@@ -597,11 +435,7 @@ class LoadingProgressWidget(QWidget):
         phase_display = {
             "idle": "대기",
             "file_loading": "파일 로딩",
-            "cache_loading": "캐시 로드",
-            "meta_scanning": "파일 탐색",
-            "change_detection": "변경 감지",
             "guid_indexing": "인덱싱",
-            "cache_saving": "캐시 저장",
             "Complete": "완료",
         }.get(phase_name, phase_name)
 
