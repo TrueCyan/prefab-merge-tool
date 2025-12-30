@@ -99,12 +99,17 @@ class UnityFileLoader:
             return data
         return {}
 
-    def load(self, file_path: Path) -> UnityDocument:
+    def load(
+        self,
+        file_path: Path,
+        unity_root: Optional[Path] = None,
+    ) -> UnityDocument:
         """
         Load a Unity YAML file and convert to UnityDocument.
 
         Args:
             file_path: Path to the Unity file (.prefab, .unity, .asset, etc.)
+            unity_root: Optional Unity project root for GUID resolution
 
         Returns:
             UnityDocument with parsed hierarchy
@@ -115,6 +120,9 @@ class UnityFileLoader:
         # Find Unity project root and setup GUID resolver
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
         project_root = GuidResolver.find_project_root(file_path_obj)
+        # Use provided unity_root if auto-detection fails (e.g., for temp files)
+        if not project_root and unity_root:
+            project_root = unity_root
         if project_root:
             self._guid_resolver.set_project_root(project_root)
 
@@ -313,15 +321,19 @@ class UnityFileLoader:
             go.children.sort(key=lambda x: x.name)
 
 
-def load_unity_file(file_path: Path) -> UnityDocument:
+def load_unity_file(
+    file_path: Path,
+    unity_root: Optional[Path] = None,
+) -> UnityDocument:
     """
     Convenience function to load a Unity file.
 
     Args:
         file_path: Path to the Unity file
+        unity_root: Optional Unity project root for GUID resolution
 
     Returns:
         UnityDocument with parsed hierarchy
     """
     loader = UnityFileLoader()
-    return loader.load(file_path)
+    return loader.load(file_path, unity_root=unity_root)

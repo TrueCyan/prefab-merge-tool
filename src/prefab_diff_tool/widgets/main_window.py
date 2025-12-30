@@ -37,7 +37,13 @@ UNITY_FILE_FILTER = (
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, parent: Optional[QWidget] = None, unity_root: Optional[Path] = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        unity_root: Optional[Path] = None,
+        workspace_root: Optional[Path] = None,
+        depot_path: Optional[str] = None,
+    ):
         super().__init__(parent)
 
         self.setWindowTitle("prefab-diff-tool")
@@ -45,6 +51,9 @@ class MainWindow(QMainWindow):
 
         # Unity project root (for GUID resolution)
         self._unity_root = unity_root
+        # CLI arguments (for debugging)
+        self._workspace_root = workspace_root
+        self._depot_path = depot_path
 
         # Restore window geometry
         self._load_settings()
@@ -167,7 +176,13 @@ class MainWindow(QMainWindow):
         
         # Help menu
         help_menu = menubar.addMenu("도움말(&H)")
-        
+
+        debug_action = QAction("디버그 정보(&D)...", self)
+        debug_action.triggered.connect(self._on_debug_info)
+        help_menu.addAction(debug_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction("정보(&A)...", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
@@ -532,7 +547,52 @@ class MainWindow(QMainWindow):
             "<p>License: MIT</p>"
             "<p><a href='https://github.com/TrueCyan/prefab-diff-tool'>GitHub</a></p>",
         )
-    
+
+    def _on_debug_info(self) -> None:
+        """Show debug information dialog."""
+        from prefab_diff_tool.utils.vcs_detector import get_vcs_info
+
+        vcs_info = get_vcs_info()
+
+        # Extract project name from temp file path (for debugging)
+        extracted_project = None
+        for f in self._current_files:
+            path_str = str(f).replace("\\", "/")
+            if "/p4v/" in path_str.lower():
+                parts = path_str.split("/")
+                try:
+                    assets_idx = next(i for i, p in enumerate(parts) if p == "Assets")
+                    if assets_idx > 0:
+                        extracted_project = parts[assets_idx - 1]
+                        break
+                except StopIteration:
+                    pass
+
+        info_text = f"""<h3>디버그 정보</h3>
+<h4>CLI 인자</h4>
+<pre>--workspace-root: {self._workspace_root}</pre>
+
+<h4>P4V 임시파일 분석</h4>
+<pre>추출된 프로젝트명: {extracted_project or '(없음)'}</pre>
+
+<h4>Unity 프로젝트</h4>
+<pre>unity_root: {self._unity_root}</pre>
+
+<h4>현재 파일</h4>
+<pre>{chr(10).join(str(f) for f in self._current_files) or '(없음)'}</pre>
+
+<h4>Git</h4>
+<pre>GIT_WORK_TREE: {vcs_info['git']['GIT_WORK_TREE']}
+GIT_DIR: {vcs_info['git']['GIT_DIR']}
+detected: {vcs_info['git']['detected_workspace']}</pre>
+
+<h4>Perforce</h4>
+<pre>P4ROOT: {vcs_info['perforce']['P4ROOT']}
+P4CLIENT: {vcs_info['perforce']['P4CLIENT']}
+detected: {vcs_info['perforce']['detected_workspace']}</pre>
+"""
+        QMessageBox.information(self, "디버그 정보", info_text)
+
     # === Signal handlers ===
     
     def _on_change_selected(self, path: str) -> None:
