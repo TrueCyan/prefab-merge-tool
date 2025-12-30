@@ -50,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--workspace-root", "-w",
+        type=Path,
+        help="VCS workspace root for GUID resolution (P4V: $r)",
+    )
+
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -100,11 +106,12 @@ def main() -> int:
         return 1
 
     # Detect Unity project root:
-    # 1. VCS workspace detection (Git/Perforce) - for temp files
-    # 2. Auto-detect from file paths
+    # 1. Explicit workspace root (--workspace-root)
+    # 2. VCS workspace detection (Git/Perforce) - for temp files
+    # 3. Auto-detect from file paths
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
-    unity_root = detect_unity_project_root(files)
+    unity_root = detect_unity_project_root(files, workspace_root=args.workspace_root)
 
     # Start GUI
     from prefab_diff_tool.app import run_app

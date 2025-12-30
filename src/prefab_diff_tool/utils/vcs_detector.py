@@ -118,37 +118,54 @@ def _detect_perforce_workspace() -> Optional[Path]:
     return None
 
 
-def detect_unity_project_root(file_paths: list[Path]) -> Optional[Path]:
+def _find_unity_in_workspace(workspace: Path) -> Optional[Path]:
+    """Find Unity project root within a workspace directory."""
+    if not workspace.is_dir():
+        return None
+    # Check if workspace itself is a Unity project
+    if (workspace / "Assets").is_dir():
+        return workspace
+    # Search for Unity project in subdirectories
+    for subdir in workspace.iterdir():
+        if subdir.is_dir():
+            if (subdir / "Assets").is_dir() and (subdir / "ProjectSettings").is_dir():
+                return subdir
+    return None
+
+
+def detect_unity_project_root(
+    file_paths: list[Path],
+    workspace_root: Optional[Path] = None,
+) -> Optional[Path]:
     """
     Detect Unity project root using multiple strategies.
 
     Priority order:
-    1. VCS workspace detection (for temp files from difftool/mergetool)
-    2. Auto-detect from file paths (for normal files within project)
+    1. Explicit workspace root (--workspace-root)
+    2. VCS workspace detection (for temp files from difftool/mergetool)
+    3. Auto-detect from file paths (for normal files within project)
 
     Args:
         file_paths: List of file paths being processed
+        workspace_root: Explicit workspace root path (e.g., from P4V's $r)
 
     Returns:
         Path to Unity project root, or None if not found
     """
-    # Priority 1: VCS workspace detection
+    # Priority 1: Explicit workspace root
+    if workspace_root:
+        found = _find_unity_in_workspace(workspace_root)
+        if found:
+            return found
+
+    # Priority 2: VCS workspace detection
     vcs_workspace = detect_vcs_workspace()
     if vcs_workspace:
-        # Check if VCS workspace is a Unity project
-        assets = vcs_workspace / "Assets"
-        if assets.is_dir():
-            return vcs_workspace
-        # Search for Unity project within VCS workspace
-        # (Unity project might be in a subdirectory)
-        for subdir in vcs_workspace.iterdir():
-            if subdir.is_dir():
-                assets = subdir / "Assets"
-                project_settings = subdir / "ProjectSettings"
-                if assets.is_dir() and project_settings.is_dir():
-                    return subdir
+        found = _find_unity_in_workspace(vcs_workspace)
+        if found:
+            return found
 
-    # Priority 2: Auto-detect from file paths
+    # Priority 3: Auto-detect from file paths
     for file_path in file_paths:
         if file_path and file_path.exists():
             found = GuidResolver.find_project_root(file_path)
