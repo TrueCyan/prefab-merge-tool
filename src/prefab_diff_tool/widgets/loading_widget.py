@@ -298,12 +298,16 @@ class FileLoadingWorker(QThread):
         meta_files: list[Path] = []
         assets_path = resolver._project_root / "Assets"
         packages_path = resolver._project_root / "Packages"
+        package_cache_path = resolver._project_root / "Library" / "PackageCache"
 
         search_paths = []
         if assets_path.exists():
             search_paths.append(assets_path)
         if packages_path.exists():
             search_paths.append(packages_path)
+        # Library/PackageCache contains Unity packages (Button, GraphicRaycaster, etc.)
+        if package_cache_path.exists():
+            search_paths.append(package_cache_path)
 
         # Just update state periodically - no signal overhead
         scanned_dirs = 0

@@ -124,6 +124,7 @@ class GuidResolver:
         progress_callback: Optional[ProgressCallback] = None,
         max_workers: Optional[int] = None,
         force_full: bool = False,
+        include_package_cache: bool = True,
     ) -> None:
         """
         Index .meta files for fast GUID lookup with incremental updates.
@@ -136,6 +137,8 @@ class GuidResolver:
             max_workers: Max threads for parallel processing.
                         Defaults to min(32, cpu_count + 4).
             force_full: If True, ignore cache and do full re-index.
+            include_package_cache: If True, also scan Library/PackageCache
+                                  for Unity packages (Button, GraphicRaycaster, etc.)
         """
         if not self._project_root:
             if progress_callback:
@@ -160,9 +163,18 @@ class GuidResolver:
 
         meta_files: list[Path] = []
         search_paths = [assets_path]
+
+        # Packages folder (local packages and manifest references)
         packages_path = self._project_root / "Packages"
         if packages_path.exists():
             search_paths.append(packages_path)
+
+        # Library/PackageCache contains downloaded Unity packages
+        # (com.unity.ugui with Button, GraphicRaycaster, etc.)
+        if include_package_cache:
+            package_cache_path = self._project_root / "Library" / "PackageCache"
+            if package_cache_path.exists():
+                search_paths.append(package_cache_path)
 
         for search_path in search_paths:
             # Use os.walk for faster directory traversal
@@ -285,10 +297,15 @@ class GuidResolver:
             pass
         return None
 
-    def get_meta_file_count(self) -> Optional[int]:
+    def get_meta_file_count(self, include_package_cache: bool = True) -> Optional[int]:
         """
         Get estimated count of .meta files in the project.
-        Returns None if project root is not set.
+
+        Args:
+            include_package_cache: If True, include Library/PackageCache
+
+        Returns:
+            Count of .meta files, or None if project root is not set.
         """
         if not self._project_root:
             return None
@@ -303,6 +320,12 @@ class GuidResolver:
         if packages_path.exists():
             for root, _, files in os.walk(packages_path):
                 count += sum(1 for f in files if f.endswith(".meta"))
+
+        if include_package_cache:
+            package_cache_path = self._project_root / "Library" / "PackageCache"
+            if package_cache_path.exists():
+                for root, _, files in os.walk(package_cache_path):
+                    count += sum(1 for f in files if f.endswith(".meta"))
 
         return count
 
@@ -368,11 +391,16 @@ class GuidResolver:
         if not assets_path.exists():
             return None
 
-        # Search in Assets and Packages
+        # Search in Assets, Packages, and Library/PackageCache
         search_paths = [assets_path]
         packages_path = self._project_root / "Packages"
         if packages_path.exists():
             search_paths.append(packages_path)
+
+        # Library/PackageCache for Unity built-in packages
+        package_cache_path = self._project_root / "Library" / "PackageCache"
+        if package_cache_path.exists():
+            search_paths.append(package_cache_path)
 
         for search_path in search_paths:
             for meta_file in search_path.rglob("*.meta"):
