@@ -177,6 +177,11 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("도움말(&H)")
 
+        log_action = QAction("로그 뷰어(&L)...", self)
+        log_action.setShortcut(QKeySequence("Ctrl+L"))
+        log_action.triggered.connect(self._on_show_logs)
+        help_menu.addAction(log_action)
+
         debug_action = QAction("디버그 정보(&D)...", self)
         debug_action.triggered.connect(self._on_debug_info)
         help_menu.addAction(debug_action)
@@ -547,6 +552,13 @@ class MainWindow(QMainWindow):
             "<p>License: MIT</p>"
             "<p><a href='https://github.com/TrueCyan/prefab-diff-tool'>GitHub</a></p>",
         )
+
+    def _on_show_logs(self) -> None:
+        """Show the log viewer dialog."""
+        from prefab_diff_tool.widgets.log_viewer import LogViewerDialog
+
+        dialog = LogViewerDialog(self)
+        dialog.exec()
 
     def _on_debug_info(self) -> None:
         """Show debug information dialog."""

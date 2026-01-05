@@ -2,6 +2,7 @@
 Application initialization and main loop.
 """
 
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,7 @@ from PySide6.QtGui import QIcon, QPalette, QColor
 from PySide6.QtWidgets import QApplication
 
 from prefab_diff_tool.widgets.main_window import MainWindow
+from prefab_diff_tool.utils.log_handler import setup_logging
 
 
 def setup_dark_palette(app: QApplication) -> None:
@@ -62,6 +64,11 @@ def run_app(
     Returns:
         Exit code (0 for success)
     """
+    # Setup logging (captures logs for the log viewer)
+    setup_logging(level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting prefab-diff-tool")
+
     # High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
