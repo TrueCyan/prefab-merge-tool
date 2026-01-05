@@ -9,12 +9,30 @@ VCS environment variables, enabling GUID resolution for temp files.
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 logger = logging.getLogger(__name__)
+
+
+def _get_subprocess_kwargs() -> dict:
+    """Get platform-specific subprocess kwargs to hide console windows on Windows."""
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+    }
+    # On Windows, hide the console window that would otherwise flash
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+        # CREATE_NO_WINDOW flag for extra safety
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
 
 
 def detect_vcs_workspace() -> Optional[Path]:
@@ -66,9 +84,8 @@ def _detect_git_workspace() -> Optional[Path]:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
             timeout=5,
+            **_get_subprocess_kwargs(),
         )
         if result.returncode == 0:
             toplevel = result.stdout.strip()
@@ -102,9 +119,8 @@ def _detect_perforce_workspace() -> Optional[Path]:
 
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
             timeout=10,
+            **_get_subprocess_kwargs(),
         )
         if result.returncode == 0:
             # Parse "Client root: /path/to/workspace" line
