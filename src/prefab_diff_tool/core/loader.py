@@ -122,11 +122,20 @@ class UnityFileLoader:
         self._entries_by_id = {}
 
         # Find Unity project root and setup GUID resolver
+        # Priority: provided unity_root > auto-detect (non-temp only)
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
-        project_root = GuidResolver.find_project_root(file_path_obj)
-        # Use provided unity_root if auto-detection fails (e.g., for temp files)
-        if not project_root and unity_root:
+        project_root = None
+
+        # Use provided unity_root first (reliable)
+        if unity_root:
             project_root = unity_root
+            logger.info(f"Using provided unity_root: {project_root}")
+        else:
+            # Try auto-detection (may find temp directory - will be validated later)
+            project_root = GuidResolver.find_project_root(file_path_obj)
+            if project_root:
+                logger.debug(f"Auto-detected project root: {project_root}")
+
         if project_root:
             logger.info(f"Setting up GUID resolver for project: {project_root}")
             self._guid_resolver.set_project_root(project_root)

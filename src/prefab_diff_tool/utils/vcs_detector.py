@@ -6,12 +6,15 @@ the project structure. This module detects the original workspace root from
 VCS environment variables, enabling GUID resolution for temp files.
 """
 
+import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
+
+logger = logging.getLogger(__name__)
 
 
 def detect_vcs_workspace() -> Optional[Path]:
@@ -118,18 +121,74 @@ def _detect_perforce_workspace() -> Optional[Path]:
     return None
 
 
+def _is_temp_directory(path: Path) -> bool:
+    """
+    Check if a path is within a temporary directory.
+
+    Temp directories typically don't contain all .meta files needed for
+    GUID resolution. This function detects common temp directory patterns.
+    """
+    path_str = str(path).replace("\\", "/").lower()
+
+    # Common temp directory markers
+    temp_markers = [
+        "/temp/",
+        "/tmp/",
+        "/p4v/",  # P4V temp files
+        "/appdata/local/temp/",
+        "/.git/",  # Git temp files
+    ]
+
+    return any(marker in path_str for marker in temp_markers)
+
+
+def _is_valid_unity_project(path: Path) -> bool:
+    """
+    Validate that a path is a real Unity project with .meta files.
+
+    A temp directory might have the folder structure but no .meta files.
+    This function checks for actual content.
+    """
+    if not path.is_dir():
+        return False
+
+    assets_folder = path / "Assets"
+    if not assets_folder.is_dir():
+        return False
+
+    # Check for at least one .meta file in Assets folder
+    # This distinguishes real projects from temp file copies
+    try:
+        # Check direct children first (fast)
+        for child in assets_folder.iterdir():
+            if child.suffix == ".meta":
+                return True
+        # Check one level deeper
+        for child in assets_folder.iterdir():
+            if child.is_dir():
+                for subchild in child.iterdir():
+                    if subchild.suffix == ".meta":
+                        return True
+    except (PermissionError, OSError):
+        pass
+
+    # No .meta files found - likely a temp copy
+    return False
+
+
 def _find_unity_in_workspace(workspace: Path) -> Optional[Path]:
     """Find Unity project root within a workspace directory."""
     if not workspace.is_dir():
         return None
     # Check if workspace itself is a Unity project
-    if (workspace / "Assets").is_dir():
+    if (workspace / "Assets").is_dir() and _is_valid_unity_project(workspace):
         return workspace
     # Search for Unity project in subdirectories
     for subdir in workspace.iterdir():
         if subdir.is_dir():
             if (subdir / "Assets").is_dir() and (subdir / "ProjectSettings").is_dir():
-                return subdir
+                if _is_valid_unity_project(subdir):
+                    return subdir
     return None
 
 
@@ -221,35 +280,61 @@ def detect_unity_project_root(
     Returns:
         Path to Unity project root, or None if not found
     """
+    logger.debug(f"Detecting Unity project root for files: {file_paths}")
+    logger.debug(f"Provided workspace_root: {workspace_root}")
+
     # Collect valid workspace roots
     workspaces: list[Path] = []
     if workspace_root and workspace_root.is_dir():
         workspaces.append(workspace_root)
+        logger.debug(f"Added provided workspace: {workspace_root}")
+
     vcs_workspace = detect_vcs_workspace()
     if vcs_workspace and vcs_workspace not in workspaces:
         workspaces.append(vcs_workspace)
+        logger.debug(f"Added VCS workspace: {vcs_workspace}")
 
     # Priority 1: P4V temp file path parsing (try all workspaces)
     for ws in workspaces:
         for file_path in file_paths:
             if file_path:
                 found = _find_unity_from_p4v_temp_path(ws, file_path)
-                if found:
+                if found and _is_valid_unity_project(found):
+                    logger.info(f"Found Unity project via P4V temp path: {found}")
                     return found
 
     # Priority 2: Search for Unity project in workspace (first match)
     for ws in workspaces:
         found = _find_unity_in_workspace(ws)
         if found:
+            logger.info(f"Found Unity project in workspace: {found}")
             return found
 
-    # Priority 4: Auto-detect from file paths
+    # Priority 3: Auto-detect from file paths
+    # Skip temp directories - they have the structure but no .meta files
     for file_path in file_paths:
         if file_path and file_path.exists():
+            # Check if file is in a temp directory
+            if _is_temp_directory(file_path):
+                logger.debug(f"Skipping temp file path: {file_path}")
+                continue
+
             found = GuidResolver.find_project_root(file_path)
             if found:
-                return found
+                # Validate the found project has .meta files
+                if _is_valid_unity_project(found):
+                    logger.info(f"Found Unity project via auto-detect: {found}")
+                    return found
+                else:
+                    logger.warning(
+                        f"Auto-detected path looks like Unity project but has no .meta files: {found}"
+                    )
 
+    logger.warning(
+        "Could not detect Unity project root. "
+        "GUID resolution will not work. "
+        "Use --workspace-root to specify the actual project location."
+    )
     return None
 
 
