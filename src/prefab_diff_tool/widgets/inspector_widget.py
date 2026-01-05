@@ -1259,8 +1259,8 @@ class ComponentWidget(QFrame):
 
         self._properties_populated = True
 
-        # Log at INFO level so we can see it
-        logger.info(f"Populating properties for {self._component.type_name} ({len(self._component.properties)} props)")
+        # Debug logging only
+        logger.debug(f"Populating properties for {self._component.type_name} ({len(self._component.properties)} props)")
 
         other_props = {}
         if self._other_component:
@@ -1277,7 +1277,7 @@ class ComponentWidget(QFrame):
         # Filter properties based on mode and component type
         visible_props = self._get_visible_properties()
 
-        logger.info(f"  -> {len(visible_props)} visible after filtering")
+        logger.debug(f"  -> {len(visible_props)} visible after filtering")
 
         # For Transform, use special layout (no grouping, Unity Inspector style)
         if self._component.type_name in ("Transform", "RectTransform") and not self._debug_mode:
@@ -1715,13 +1715,8 @@ class InspectorWidget(QScrollArea):
             other_components = {c.file_id: c for c in self._other_object.components}
 
         # Add component widgets - all start expanded by default
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"Creating widgets for {len(self._game_object.components)} components")
-
         for component in self._game_object.components:
             other_comp = other_components.get(component.file_id)
-            logger.info(f"  Creating widget for: {component.type_name} (file_id={component.file_id})")
 
             widget = ComponentWidget(
                 component,
