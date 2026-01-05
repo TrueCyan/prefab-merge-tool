@@ -64,10 +64,12 @@ def run_app(
     Returns:
         Exit code (0 for success)
     """
-    # Setup logging (captures logs for the log viewer)
-    setup_logging(level=logging.DEBUG)
+    # Setup logging if not already done (CLI sets it up earlier)
+    from prefab_diff_tool.utils.log_handler import MemoryLogHandler
+    if not MemoryLogHandler._instance:
+        setup_logging(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
-    logger.info("Starting prefab-diff-tool")
+    logger.info("Starting GUI")
 
     # High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
