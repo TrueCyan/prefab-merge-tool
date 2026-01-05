@@ -187,10 +187,9 @@ class FileLoadingWorker(QThread):
     progress_detailed = Signal(int, str, str)
     progress = Signal(int, int, str)
 
-    # Simplified phases - unityflow handles caching internally
+    # File loading only - GUID resolution is now lazy (on-demand SQLite queries)
     PHASE_WEIGHTS = [
-        ("file_loading", 20),   # 파일 파싱
-        ("guid_indexing", 80),  # unityflow 인덱싱 (캐시 포함)
+        ("file_loading", 100),   # 파일 파싱
     ]
 
     def __init__(
@@ -221,9 +220,9 @@ class FileLoadingWorker(QThread):
         self.progress_state.update(phase_name, percent, 100, message)
 
     def run(self) -> None:
-        """Load files and index project in background."""
+        """Load files in background. GUID resolution is now lazy (on-demand)."""
         try:
-            # Phase 1: File loading
+            # File loading only - no upfront GUID indexing needed
             self._weighted_progress.set_phase_by_name("file_loading")
             num_files = len(self._file_paths)
 
@@ -236,19 +235,15 @@ class FileLoadingWorker(QThread):
                 self._documents.append(doc)
                 self.file_loaded.emit(doc, i)
 
-                # Use first document's project root for indexing
+                # Use first document's project root for GUID resolver (lazy mode)
                 if i == 0 and doc.project_root:
                     self._guid_resolver = GuidResolver()
+                    # auto_index=False means lazy SQLite queries, no upfront loading
                     self._guid_resolver.set_project_root(
                         Path(doc.project_root), auto_index=False
                     )
 
             self._weighted_progress.complete_phase()
-
-            # Phase 2: GUID indexing using unityflow
-            if self._guid_resolver and not self._cancelled:
-                self.indexing_started.emit()
-                self._run_indexing()
 
             if not self._cancelled:
                 self.finished.emit()

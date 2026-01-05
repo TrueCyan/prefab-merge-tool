@@ -859,21 +859,21 @@ class ReferenceFieldWidget(QWidget):
 
         # External reference (has GUID)
         if guid:
-            # Try to resolve using GUID resolver - now uses SQLite cache
+            # Try to resolve using GUID resolver - uses lazy SQLite queries
             if self._guid_resolver:
                 # Check if already in memory cache (O(1))
-                if guid.lower() in self._guid_resolver._cache:
-                    name = self._guid_resolver._cache[guid.lower()]
-                    if name:
-                        asset_type = self._guid_resolver._guess_asset_type(name)
-                        return f"{name} ({asset_type})", True
+                if guid.lower() in self._guid_resolver._resolve_cache:
+                    cached_name = self._guid_resolver._resolve_cache[guid.lower()]
+                    if cached_name:
+                        asset_type = self._guid_resolver._guess_asset_type(cached_name)
+                        return f"{cached_name} ({asset_type})", True
 
                 if check_cache_only:
                     # Return placeholder, needs async resolution
                     self._pending_guid = guid
                     return f"Loading... ({guid[:8]}...)", False
 
-                # Fallback to sync resolution (should be fast with SQLite cache)
+                # Resolve via lazy SQLite query (fast - single row lookup)
                 name, asset_type = self._guid_resolver.resolve_with_type(guid)
                 if name:
                     return f"{name} ({asset_type})", True

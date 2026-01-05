@@ -3,16 +3,29 @@ Unity GUID resolver - wrapper around unityflow's asset tracking.
 
 Provides a simple interface for resolving GUIDs to asset names/paths
 using unityflow's CachedGUIDIndex.
+
+Supports two modes:
+1. Lazy mode (default): Query SQLite directly on each resolve() call.
+   - Fast startup, no memory overhead
+   - Good for viewing a single file with few GUID lookups
+2. Full index mode: Load all GUIDs into memory first.
+   - Slower startup (~5s for 180k assets)
+   - Fast repeated lookups
+   - Good for batch operations
 """
 
 import logging
+import sqlite3
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Optional
 
 from unityflow.asset_tracker import (
     CachedGUIDIndex,
     GUIDIndex,
     find_unity_project_root,
+    CACHE_DIR_NAME,
+    CACHE_DB_NAME,
 )
 
 # Set up logging
@@ -27,21 +40,31 @@ class GuidResolver:
     Resolves Unity GUIDs to asset names using unityflow's CachedGUIDIndex.
 
     This is a thin wrapper providing a convenient interface for the prefab-diff-tool.
+
+    Supports two modes:
+    - Lazy mode (default): Query SQLite directly per resolve() call
+    - Full index mode: Load all GUIDs into memory (set auto_index=True and call index_project())
     """
 
-    def __init__(self, project_root: Optional[Path] = None, auto_index: bool = True):
+    def __init__(self, project_root: Optional[Path] = None, auto_index: bool = False):
         """
         Initialize the resolver.
 
         Args:
             project_root: Unity project root path (containing Assets folder).
                          If None, will be detected from file paths.
-            auto_index: If True, automatically index the project on first resolve.
+            auto_index: If True, load full index on first resolve (slow for large projects).
+                       If False (default), use lazy SQLite queries (fast startup).
         """
         self._project_root = project_root
         self._auto_index = auto_index
         self._cached_index: Optional[CachedGUIDIndex] = None
         self._index: Optional[GUIDIndex] = None
+        self._db_path: Optional[Path] = None
+        self._db_lock = Lock()
+        # In-memory cache for recently resolved GUIDs (LRU-like)
+        self._resolve_cache: dict[str, Optional[str]] = {}
+        self._cache_max_size = 1000
 
         if project_root:
             self._init_cached_index(project_root)
@@ -60,22 +83,26 @@ class GuidResolver:
         return find_unity_project_root(file_path)
 
     def _init_cached_index(self, project_root: Path) -> None:
-        """Initialize the cached GUID index."""
+        """Initialize the cached GUID index and DB path."""
         logger.debug(f"Initializing CachedGUIDIndex for: {project_root}")
         self._cached_index = CachedGUIDIndex(project_root)
+        self._db_path = project_root / CACHE_DIR_NAME / CACHE_DB_NAME
+        logger.debug(f"GUID cache DB path: {self._db_path}")
 
-    def set_project_root(self, project_root: Path, auto_index: bool = True) -> None:
+    def set_project_root(self, project_root: Path, auto_index: bool = False) -> None:
         """Set project root and initialize cache.
 
         Args:
             project_root: Unity project root path.
-            auto_index: If True, project will be indexed on first resolve.
+            auto_index: If True, load full index on first resolve (slow).
+                       If False (default), use lazy SQLite queries (fast).
         """
         if self._project_root != project_root:
             logger.info(f"Setting project root: {project_root}")
             self._project_root = project_root
             self._auto_index = auto_index
             self._index = None
+            self._resolve_cache.clear()
             self._init_cached_index(project_root)
 
     def index_project(
@@ -125,9 +152,63 @@ class GuidResolver:
         """Check if the project has been indexed."""
         return self._index is not None
 
+    def _query_db(self, guid: str) -> Optional[Path]:
+        """Query the SQLite cache directly for a single GUID.
+
+        This is much faster for startup as it doesn't load all 180k+ entries.
+
+        Args:
+            guid: The GUID to look up (already lowercased)
+
+        Returns:
+            Path to the asset, or None if not found
+        """
+        if not self._db_path or not self._db_path.exists():
+            return None
+
+        try:
+            with self._db_lock:
+                conn = sqlite3.connect(str(self._db_path), timeout=5.0)
+                try:
+                    cursor = conn.execute(
+                        "SELECT path FROM guid_cache WHERE guid = ?",
+                        (guid,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        return Path(row[0])
+                finally:
+                    conn.close()
+        except sqlite3.Error as e:
+            logger.debug(f"DB query error for GUID {guid[:8]}...: {e}")
+
+        return None
+
+    def _ensure_db_exists(self) -> bool:
+        """Ensure the GUID cache database exists, creating if needed.
+
+        Returns:
+            True if DB exists or was created successfully
+        """
+        if self._db_path and self._db_path.exists():
+            return True
+
+        # Need to build the index first to create the DB
+        if self._cached_index:
+            logger.info("Building GUID cache (first run)...")
+            self._index = self._cached_index.get_index(include_packages=True)
+            count = len(self._index) if self._index else 0
+            logger.info(f"GUID cache built: {count:,} entries")
+            return self._db_path and self._db_path.exists()
+
+        return False
+
     def resolve(self, guid: str) -> Optional[str]:
         """
         Resolve a GUID to an asset name.
+
+        Uses lazy SQLite queries by default for fast startup.
+        Falls back to full index if auto_index=True was set.
 
         Args:
             guid: The GUID to resolve (32 hex characters)
@@ -141,28 +222,59 @@ class GuidResolver:
         original_guid = guid
         guid = guid.lower()
 
-        # Auto-index if needed
-        if self._index is None and self._auto_index and self._cached_index:
-            logger.debug("Auto-indexing on first resolve")
-            self._index = self._cached_index.get_index(include_packages=True)
+        # Check in-memory cache first (O(1))
+        if guid in self._resolve_cache:
+            return self._resolve_cache[guid]
 
-        if self._index is None:
-            logger.warning(f"Cannot resolve GUID {guid[:8]}...: index not available")
+        # If full index is loaded, use it
+        if self._index is not None:
+            path = self._index.get_path(guid)
+            if path:
+                result = self._path_to_name(path)
+                self._add_to_cache(guid, result)
+                return result
+            self._add_to_cache(guid, None)
             return None
 
-        path = self._index.get_path(guid)
+        # Auto-index if requested (slow startup mode)
+        if self._auto_index and self._cached_index:
+            logger.debug("Auto-indexing on first resolve (slow mode)")
+            self._index = self._cached_index.get_index(include_packages=True)
+            return self.resolve(original_guid)  # Retry with index
+
+        # Lazy mode: query SQLite directly (fast startup)
+        if not self._ensure_db_exists():
+            logger.warning(f"Cannot resolve GUID {guid[:8]}...: no cache available")
+            return None
+
+        path = self._query_db(guid)
         if path:
-            # Return just the filename (with extension for non-scripts)
-            if path.suffix and path.suffix != ".cs":
-                result = path.name
-            else:
-                result = path.stem
+            result = self._path_to_name(path)
             logger.debug(f"Resolved GUID {guid[:8]}... -> {result}")
+            self._add_to_cache(guid, result)
             return result
 
-        # Log failed resolution for debugging
-        logger.debug(f"Failed to resolve GUID: {original_guid} (lowercased: {guid})")
+        # Not found
+        logger.debug(f"Failed to resolve GUID: {original_guid}")
+        self._add_to_cache(guid, None)
         return None
+
+    def _path_to_name(self, path: Path) -> str:
+        """Convert a path to a display name."""
+        if path.suffix and path.suffix != ".cs":
+            return path.name
+        return path.stem
+
+    def _add_to_cache(self, guid: str, name: Optional[str]) -> None:
+        """Add a resolved GUID to the in-memory cache."""
+        # Simple cache eviction when too large
+        if len(self._resolve_cache) >= self._cache_max_size:
+            # Remove oldest entries (first 100)
+            keys_to_remove = list(self._resolve_cache.keys())[:100]
+            for key in keys_to_remove:
+                del self._resolve_cache[key]
+
+        self._resolve_cache[guid] = name
 
     def resolve_path(self, guid: str) -> Optional[Path]:
         """
@@ -179,14 +291,20 @@ class GuidResolver:
 
         guid = guid.lower()
 
-        # Auto-index if needed
-        if self._index is None and self._auto_index and self._cached_index:
-            self._index = self._cached_index.get_index(include_packages=True)
+        # If full index is loaded, use it
+        if self._index is not None:
+            return self._index.get_path(guid)
 
-        if self._index is None:
+        # Auto-index if requested
+        if self._auto_index and self._cached_index:
+            self._index = self._cached_index.get_index(include_packages=True)
+            return self._index.get_path(guid) if self._index else None
+
+        # Lazy mode: query SQLite directly
+        if not self._ensure_db_exists():
             return None
 
-        return self._index.get_path(guid)
+        return self._query_db(guid)
 
     def resolve_with_type(self, guid: str) -> tuple[Optional[str], Optional[str]]:
         """
