@@ -5,6 +5,7 @@ Provides a simple interface for resolving GUIDs to asset names/paths
 using unityflow's CachedGUIDIndex.
 """
 
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -13,6 +14,9 @@ from unityflow.asset_tracker import (
     GUIDIndex,
     find_unity_project_root,
 )
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Progress callback type: (current, total, message) -> None
 ProgressCallback = Callable[[int, int, str], None]
@@ -57,6 +61,7 @@ class GuidResolver:
 
     def _init_cached_index(self, project_root: Path) -> None:
         """Initialize the cached GUID index."""
+        logger.debug(f"Initializing CachedGUIDIndex for: {project_root}")
         self._cached_index = CachedGUIDIndex(project_root)
 
     def set_project_root(self, project_root: Path, auto_index: bool = True) -> None:
@@ -67,6 +72,7 @@ class GuidResolver:
             auto_index: If True, project will be indexed on first resolve.
         """
         if self._project_root != project_root:
+            logger.info(f"Setting project root: {project_root}")
             self._project_root = project_root
             self._auto_index = auto_index
             self._index = None
@@ -86,6 +92,7 @@ class GuidResolver:
             include_package_cache: If True, include Library/PackageCache
         """
         if not self._cached_index:
+            logger.warning("index_project called without project root")
             if progress_callback:
                 progress_callback(1, 1, "No project root set")
             return
@@ -93,11 +100,25 @@ class GuidResolver:
         if progress_callback:
             progress_callback(0, 1, "인덱싱 중...")
 
-        # Use unityflow's cached index
-        self._index = self._cached_index.get_index(include_packages=include_package_cache)
+        # Wrap the progress callback to add message
+        def unityflow_progress(current: int, total: int) -> None:
+            if progress_callback:
+                if total > 0:
+                    progress_callback(current, total, f"인덱싱 중... {current:,}/{total:,}")
+                else:
+                    progress_callback(current, 1, "인덱싱 중...")
+
+        # Use unityflow's cached index with progress callback
+        logger.info(f"Starting index with include_packages={include_package_cache}")
+        self._index = self._cached_index.get_index(
+            include_packages=include_package_cache,
+            progress_callback=unityflow_progress,
+        )
+
+        count = len(self._index) if self._index else 0
+        logger.info(f"Indexing complete: {count} assets")
 
         if progress_callback:
-            count = len(self._index) if self._index else 0
             progress_callback(1, 1, f"인덱싱 완료: {count:,}개 에셋")
 
     def is_indexed(self) -> bool:
@@ -117,22 +138,30 @@ class GuidResolver:
         if not guid:
             return None
 
+        original_guid = guid
         guid = guid.lower()
 
         # Auto-index if needed
         if self._index is None and self._auto_index and self._cached_index:
+            logger.debug("Auto-indexing on first resolve")
             self._index = self._cached_index.get_index(include_packages=True)
 
         if self._index is None:
+            logger.warning(f"Cannot resolve GUID {guid[:8]}...: index not available")
             return None
 
         path = self._index.get_path(guid)
         if path:
             # Return just the filename (with extension for non-scripts)
             if path.suffix and path.suffix != ".cs":
-                return path.name
-            return path.stem
+                result = path.name
+            else:
+                result = path.stem
+            logger.debug(f"Resolved GUID {guid[:8]}... -> {result}")
+            return result
 
+        # Log failed resolution for debugging
+        logger.debug(f"Failed to resolve GUID: {original_guid} (lowercased: {guid})")
         return None
 
     def resolve_path(self, guid: str) -> Optional[Path]:
@@ -228,6 +257,23 @@ class GuidResolver:
             return ext_map.get(ext, "Asset")
 
         return "Asset"
+
+    def get_index_stats(self) -> dict:
+        """Get statistics about the current index for debugging."""
+        if self._index is None:
+            return {"indexed": False, "count": 0}
+
+        # Count by extension
+        ext_counts: dict[str, int] = {}
+        for path in self._index.guid_to_path.values():
+            ext = path.suffix.lower() if path.suffix else "(no ext)"
+            ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+        return {
+            "indexed": True,
+            "count": len(self._index),
+            "by_extension": ext_counts,
+        }
 
     def clear_cache(self) -> None:
         """Clear the GUID cache."""

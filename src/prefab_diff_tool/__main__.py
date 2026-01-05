@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -130,6 +131,12 @@ def main() -> int:
     )
 
     if args.debug:
+        # Enable debug logging
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="[%(levelname)s] %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
         print(f"[DEBUG] --workspace-root: {args.workspace_root}", file=sys.stderr)
         print(f"[DEBUG] --depot-path: {args.depot_path}", file=sys.stderr)
         print(f"[DEBUG] detected unity_root: {unity_root}", file=sys.stderr)
