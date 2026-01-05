@@ -1254,6 +1254,9 @@ class ComponentWidget(QFrame):
 
     def _populate_properties(self) -> None:
         """Populate the properties list based on Normal/Debug mode (lazy loaded)."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         self._properties_populated = True
 
         other_props = {}
@@ -1268,8 +1271,15 @@ class ComponentWidget(QFrame):
                     constrain_proportions = bool(p.value)
                     break
 
+        # Debug: log all properties before filtering
+        logger.debug(f"Component {self._component.type_name} has {len(self._component.properties)} properties:")
+        for p in self._component.properties:
+            logger.debug(f"  - {p.name}: {type(p.value).__name__} = {str(p.value)[:100]}")
+
         # Filter properties based on mode and component type
         visible_props = self._get_visible_properties()
+
+        logger.debug(f"After filtering: {len(visible_props)} visible properties")
 
         # For Transform, use special layout (no grouping, Unity Inspector style)
         if self._component.type_name in ("Transform", "RectTransform") and not self._debug_mode:
@@ -1706,17 +1716,9 @@ class InspectorWidget(QScrollArea):
         if self._other_object:
             other_components = {c.file_id: c for c in self._other_object.components}
 
-        # Add component widgets with smart expansion:
-        # - Transform/RectTransform: always expanded (most common to view)
-        # - Modified/Added/Removed components: expanded (show changes)
-        # - Other components: collapsed (lazy load when user expands)
+        # Add component widgets - all start expanded by default
         for component in self._game_object.components:
             other_comp = other_components.get(component.file_id)
-
-            # Determine if component should start expanded
-            is_transform = component.type_name in ("Transform", "RectTransform")
-            has_changes = component.diff_status != DiffStatus.UNCHANGED
-            start_expanded = is_transform or has_changes
 
             widget = ComponentWidget(
                 component,
@@ -1724,7 +1726,7 @@ class InspectorWidget(QScrollArea):
                 debug_mode=self._debug_mode,
                 document=self._document,
                 guid_resolver=self._guid_resolver,
-                start_expanded=start_expanded,
+                start_expanded=True,  # Always start expanded
             )
             # Forward reference signals to InspectorWidget
             widget.reference_clicked.connect(self.reference_clicked)
