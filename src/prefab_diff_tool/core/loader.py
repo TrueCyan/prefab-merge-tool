@@ -84,12 +84,16 @@ class UnityFileLoader:
     """Loads Unity YAML files and converts to UnityDocument model."""
 
     # Component type names that are skipped for hierarchy building
-    SKIP_TYPES = frozenset({"Prefab", "PrefabInstance"})
+    # Note: PrefabInstance is now handled specially for nested prefab support
+    SKIP_TYPES = frozenset({"Prefab"})
 
     def __init__(self):
         self._raw_doc: Optional[UnityYAMLDocument] = None
         self._entries_by_id: dict[str, Any] = {}
         self._guid_resolver = GuidResolver()
+        # Maps for PrefabInstance handling
+        self._prefab_instances: dict[str, Any] = {}  # fileID -> PrefabInstance entry
+        self._stripped_transforms: dict[str, str] = {}  # Transform fileID -> PrefabInstance fileID
 
     def _get_entry_data(self, entry: Any) -> dict:
         """Get the data dictionary from a UnityYAMLObject."""
@@ -152,10 +156,35 @@ class UnityFileLoader:
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
 
+        # Reset PrefabInstance tracking
+        self._prefab_instances.clear()
+        self._stripped_transforms.clear()
+
         # Extract all GameObjects and Components
         game_objects: dict[str, UnityGameObject] = {}
         components: dict[str, UnityComponent] = {}
 
+        # First pass: collect PrefabInstances and stripped objects
+        for entry in self._raw_doc.objects:
+            file_id = str(getattr(entry, "file_id", ""))
+            raw_class_name = getattr(entry, "class_name", "Unknown")
+            class_name = resolve_class_name(raw_class_name)
+            is_stripped = getattr(entry, "stripped", False)
+
+            # Collect PrefabInstance entries
+            if class_name == "PrefabInstance":
+                self._prefab_instances[file_id] = entry
+
+            # Collect stripped Transform references
+            if is_stripped and class_name in ("Transform", "RectTransform"):
+                data = self._get_entry_data(entry)
+                prefab_ref = data.get("m_PrefabInstance")
+                if prefab_ref and isinstance(prefab_ref, dict):
+                    prefab_id = str(prefab_ref.get("fileID", ""))
+                    if prefab_id:
+                        self._stripped_transforms[file_id] = prefab_id
+
+        # Second pass: parse GameObjects and Components
         for entry in self._raw_doc.objects:
             file_id = str(getattr(entry, "file_id", ""))
             raw_class_name = getattr(entry, "class_name", "Unknown")
@@ -166,6 +195,13 @@ class UnityFileLoader:
                 go = self._parse_game_object(entry, file_id)
                 game_objects[file_id] = go
                 doc.all_objects[file_id] = go
+
+            elif class_name == "PrefabInstance":
+                # Create virtual GameObject for nested prefab
+                virtual_go = self._parse_prefab_instance(entry, file_id)
+                if virtual_go:
+                    game_objects[file_id] = virtual_go
+                    doc.all_objects[file_id] = virtual_go
 
             elif class_name not in self.SKIP_TYPES:
                 comp = self._parse_component(entry, file_id, class_name)
@@ -200,6 +236,39 @@ class UnityFileLoader:
             tag=tag,
             is_active=is_active,
         )
+
+    def _parse_prefab_instance(
+        self, entry: Any, file_id: str
+    ) -> Optional[UnityGameObject]:
+        """Parse a PrefabInstance entry and create a virtual GameObject."""
+        data = self._get_entry_data(entry)
+
+        # Get source prefab reference
+        source_ref = data.get("m_SourcePrefab")
+        source_guid = None
+        if source_ref and isinstance(source_ref, dict):
+            source_guid = source_ref.get("guid")
+
+        # Try to resolve prefab name from GUID
+        prefab_name = None
+        if source_guid:
+            prefab_name = self._guid_resolver.resolve(source_guid)
+
+        # Fallback name if resolution fails
+        if not prefab_name:
+            prefab_name = f"PrefabInstance ({file_id[:8]}...)"
+
+        # Create virtual GameObject representing the nested prefab
+        virtual_go = UnityGameObject(
+            file_id=file_id,
+            name=prefab_name,
+            is_prefab_instance=True,
+            source_prefab_guid=source_guid,
+            prefab_instance_id=file_id,
+        )
+
+        logger.debug(f"Created virtual GO for PrefabInstance: {prefab_name} (fileID={file_id})")
+        return virtual_go
 
     def _parse_component(
         self, entry: Any, file_id: str, class_name: str
@@ -312,9 +381,46 @@ class UnityFileLoader:
             if transform:
                 transform_to_go[transform.file_id] = go
 
-        # Second pass: build Transform hierarchy using m_Father only
+        # Add stripped Transform -> PrefabInstance (virtual GO) mappings
+        # This allows objects added to nested prefabs to find their parent
+        for stripped_transform_id, prefab_instance_id in self._stripped_transforms.items():
+            if prefab_instance_id in game_objects:
+                virtual_go = game_objects[prefab_instance_id]
+                transform_to_go[stripped_transform_id] = virtual_go
+                logger.debug(
+                    f"Mapped stripped Transform {stripped_transform_id} -> "
+                    f"PrefabInstance {virtual_go.name}"
+                )
+
+        # Second pass: build hierarchy for PrefabInstances using m_TransformParent
+        for prefab_id, prefab_entry in self._prefab_instances.items():
+            if prefab_id not in game_objects:
+                continue
+
+            virtual_go = game_objects[prefab_id]
+            data = self._get_entry_data(prefab_entry)
+
+            # Get modification data which contains m_TransformParent
+            modification = data.get("m_Modification", {})
+            parent_ref = modification.get("m_TransformParent")
+            if parent_ref and isinstance(parent_ref, dict):
+                parent_transform_id = str(parent_ref.get("fileID", ""))
+                if parent_transform_id and parent_transform_id != "0":
+                    parent_go = transform_to_go.get(parent_transform_id)
+                    if parent_go and virtual_go not in parent_go.children:
+                        virtual_go.parent = parent_go
+                        parent_go.children.append(virtual_go)
+                        logger.debug(
+                            f"PrefabInstance {virtual_go.name} -> parent {parent_go.name}"
+                        )
+
+        # Third pass: build Transform hierarchy using m_Father for regular GameObjects
         # (Using m_Father is sufficient and avoids duplicate children)
         for go_id, go in game_objects.items():
+            # Skip PrefabInstances - they use m_TransformParent instead
+            if go.is_prefab_instance:
+                continue
+
             transform = go.get_transform()
             if not transform:
                 continue

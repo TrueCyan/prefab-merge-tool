@@ -59,11 +59,16 @@ class UnityGameObject:
     children: list["UnityGameObject"] = field(default_factory=list)
     parent: Optional["UnityGameObject"] = field(default=None, repr=False)
     diff_status: DiffStatus = DiffStatus.UNCHANGED
-    
+
     # Additional metadata
     layer: int = 0
     tag: str = "Untagged"
     is_active: bool = True
+
+    # PrefabInstance support
+    is_prefab_instance: bool = False  # True if this is a nested prefab instance
+    source_prefab_guid: Optional[str] = None  # GUID of the source prefab
+    prefab_instance_id: Optional[str] = None  # fileID of the PrefabInstance entry
     
     def get_component(self, type_name: str) -> Optional[UnityComponent]:
         """Get first component of given type."""
