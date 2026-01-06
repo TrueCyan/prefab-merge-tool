@@ -13,11 +13,24 @@ import os
 import sys
 from pathlib import Path
 
-# Redirect stdout/stderr on Windows to prevent console window flash
-# This applies to both frozen EXE and pip-installed GUI apps
+# Hide console window on Windows as early as possible
 if sys.platform == "win32":
     try:
-        # Always redirect on Windows to prevent any console allocation
+        import ctypes
+        # Hide the console window
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # Get the console window handle
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            # SW_HIDE = 0
+            user32.ShowWindow(hwnd, 0)
+
+        # Also free the console to prevent any future allocation
+        kernel32.FreeConsole()
+
+        # Redirect stdout/stderr to devnull
         sys.stdout = open(os.devnull, 'w', encoding='utf-8')
         sys.stderr = open(os.devnull, 'w', encoding='utf-8')
     except Exception:

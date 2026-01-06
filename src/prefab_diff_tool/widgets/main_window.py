@@ -72,6 +72,9 @@ class MainWindow(QMainWindow):
         # Merge view (created on demand)
         self._merge_view: Optional[MergeView] = None
 
+        # Log viewer (non-modal, kept alive while open)
+        self._log_viewer = None
+
         # Current file paths
         self._current_files: list[Path] = []
         self._output_file: Optional[Path] = None
@@ -554,11 +557,24 @@ class MainWindow(QMainWindow):
         )
 
     def _on_show_logs(self) -> None:
-        """Show the log viewer dialog."""
+        """Show the log viewer dialog (non-modal)."""
         from prefab_diff_tool.widgets.log_viewer import LogViewerDialog
 
-        dialog = LogViewerDialog(self)
-        dialog.exec()
+        # If already open, just bring to front
+        if self._log_viewer is not None and self._log_viewer.isVisible():
+            self._log_viewer.raise_()
+            self._log_viewer.activateWindow()
+            return
+
+        # Create new dialog (non-modal)
+        self._log_viewer = LogViewerDialog(self)
+        self._log_viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._log_viewer.destroyed.connect(self._on_log_viewer_closed)
+        self._log_viewer.show()
+
+    def _on_log_viewer_closed(self) -> None:
+        """Handle log viewer being closed."""
+        self._log_viewer = None
 
     def _on_debug_info(self) -> None:
         """Show debug information dialog."""
