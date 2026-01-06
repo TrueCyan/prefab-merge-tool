@@ -817,58 +817,33 @@ class ReferenceFieldWidget(QWidget):
         self._value = value
         self._document = document
         self._guid_resolver = guid_resolver
-        self._ref_btn: Optional[QPushButton] = None
-        self._pending_guid: Optional[str] = None
         self._setup_ui(value, is_modified, old_value)
 
-    def _resolve_reference(self, value: dict, check_cache_only: bool = False) -> tuple[str, bool]:
-        """Resolve a reference to a display name.
-
-        Args:
-            value: Reference dict with fileID and optional guid
-            check_cache_only: If True, return placeholder for cache misses
-
-        Returns:
-            Tuple of (display_name, is_resolved)
-            is_resolved is False if we need async resolution
-        """
+    def _resolve_reference(self, value: dict) -> str:
+        """Resolve a reference to a display name like 'ObjectName (ComponentType)'."""
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
 
         if file_id == 0:
-            return "None", True
+            return "None"
 
         # External reference (has GUID)
         if guid:
-            # Try to resolve using GUID resolver - uses lazy SQLite queries
+            # Try to resolve using GUID resolver
             if self._guid_resolver:
-                # Check if already in memory cache (O(1))
-                if guid.lower() in self._guid_resolver._resolve_cache:
-                    cached_name = self._guid_resolver._resolve_cache[guid.lower()]
-                    if cached_name:
-                        asset_type = self._guid_resolver._guess_asset_type(cached_name)
-                        return f"{cached_name} ({asset_type})", True
-
-                if check_cache_only:
-                    # Return placeholder, needs async resolution
-                    self._pending_guid = guid
-                    return f"Loading... ({guid[:8]}...)", False
-
-                # Resolve via lazy SQLite query (fast - single row lookup)
                 name, asset_type = self._guid_resolver.resolve_with_type(guid)
                 if name:
-                    return f"{name} ({asset_type})", True
-
+                    return f"{name} ({asset_type})"
             # Fallback to showing partial GUID
-            return f"External Asset ({guid[:8]}...)", True
+            return f"External Asset ({guid[:8]}...)"
 
-        # Internal reference - try to resolve from document (always fast)
+        # Internal reference - try to resolve from document
         if self._document:
             file_id_str = str(file_id)
             # Check if it's a GameObject
             go = self._document.all_objects.get(file_id_str)
             if go:
-                return f"{go.name} (GameObject)", True
+                return f"{go.name} (GameObject)"
 
             # Check if it's a Component - use O(1) reverse lookup
             comp = self._document.all_components.get(file_id_str)
@@ -876,11 +851,11 @@ class ReferenceFieldWidget(QWidget):
                 owner = self._document.get_component_owner(file_id_str)
                 comp_name = comp.script_name or comp.type_name
                 if owner:
-                    return f"{owner.name} ({comp_name})", True
-                return f"({comp_name})", True
+                    return f"{owner.name} ({comp_name})"
+                return f"({comp_name})"
 
         # Fallback
-        return f"(ID: {file_id})", True
+        return f"(ID: {file_id})"
 
     def _setup_ui(
         self,
@@ -894,16 +869,16 @@ class ReferenceFieldWidget(QWidget):
 
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
-        display, is_resolved = self._resolve_reference(value)
+        display = self._resolve_reference(value)
 
         # Create clickable button for non-None references
         if file_id != 0:
-            self._ref_btn = QPushButton(display)
-            self._ref_btn.setFlat(True)
-            self._ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ref_btn = QPushButton(display)
+            ref_btn.setFlat(True)
+            ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
             if is_modified:
-                self._ref_btn.setStyleSheet(
+                ref_btn.setStyleSheet(
                     f"QPushButton {{ background-color: {DiffColors.MODIFIED_BG_DARK.name()}; "
                     f"color: {DiffColors.MODIFIED_FG.name()}; "
                     "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
@@ -911,15 +886,15 @@ class ReferenceFieldWidget(QWidget):
                     "QPushButton:hover { background-color: #4a4a4a; }"
                 )
             else:
-                self._ref_btn.setStyleSheet(
+                ref_btn.setStyleSheet(
                     "QPushButton { background-color: #3c3c3c; color: #7eb8ff; "
                     "padding: 2px 4px; border-radius: 2px; font-size: 11px; "
                     "text-align: left; border: none; } "
                     "QPushButton:hover { background-color: #4a4a4a; text-decoration: underline; }"
                 )
 
-            self._ref_btn.clicked.connect(lambda: self._on_click(value))
-            layout.addWidget(self._ref_btn, 1)
+            ref_btn.clicked.connect(lambda: self._on_click(value))
+            layout.addWidget(ref_btn, 1)
         else:
             # None reference - just show label
             ref_label = QLabel(display)
@@ -936,7 +911,7 @@ class ReferenceFieldWidget(QWidget):
             arrow.setStyleSheet("color: #666; font-size: 11px;")
             layout.addWidget(arrow)
 
-            old_display, _ = self._resolve_reference(old_value)
+            old_display = self._resolve_reference(old_value)
             old_field = QLabel(old_display)
             old_field.setStyleSheet(
                 "background-color: #2a2a2a; color: #666; "
