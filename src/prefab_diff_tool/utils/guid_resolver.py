@@ -201,6 +201,12 @@ class GuidResolver:
         Returns:
             Path to the asset, or None if not found
         """
+        # DEBUG: Temporarily disable SQLite queries to test if this is causing console windows
+        # Remove this block after testing
+        import os
+        if os.environ.get("PREFAB_DIFF_NO_SQLITE"):
+            return None
+
         try:
             with self._db_lock:
                 conn = self._get_db_connection()
