@@ -848,10 +848,12 @@ class ReferenceFieldWidget(QWidget):
             # Check if it's a Component - use O(1) reverse lookup
             comp = self._document.all_components.get(file_id_str)
             if comp:
+                # Use get_component_owner for O(1) lookup instead of O(n×m) iteration
                 owner = self._document.get_component_owner(file_id_str)
                 comp_name = comp.script_name or comp.type_name
                 if owner:
                     return f"{owner.name} ({comp_name})"
+                # Component found but no owner
                 return f"({comp_name})"
 
         # Fallback
@@ -1029,9 +1031,6 @@ class ComponentWidget(QFrame):
 
     Shows component header with expand/collapse button and property list.
     Supports Normal mode (Unity Inspector style) and Debug mode (all properties).
-
-    Uses lazy loading: property widgets are only created when the component
-    is expanded for the first time, improving initial display performance.
     """
 
     # Signals for reference navigation
@@ -1046,7 +1045,6 @@ class ComponentWidget(QFrame):
         document: Optional[Any] = None,  # UnityDocument for resolving refs
         guid_resolver: Optional[GuidResolver] = None,
         parent: Optional[QWidget] = None,
-        start_expanded: bool = True,
     ):
         super().__init__(parent)
         self._component = component
@@ -1054,8 +1052,7 @@ class ComponentWidget(QFrame):
         self._debug_mode = debug_mode
         self._document = document
         self._guid_resolver = guid_resolver
-        self._is_expanded = start_expanded
-        self._properties_populated = False  # Lazy loading flag
+        self._is_expanded = True
         self._property_widgets: list[QWidget] = []
         self._setup_ui()
 
@@ -1086,13 +1083,7 @@ class ComponentWidget(QFrame):
         self._properties_layout.setContentsMargins(0, 4, 0, 4)
         self._properties_layout.setSpacing(0)
 
-        # Lazy loading: only populate if starting expanded
-        if self._is_expanded:
-            self._populate_properties()
-            self._properties_container.setVisible(True)
-        else:
-            self._properties_container.setVisible(False)
-
+        self._populate_properties()
         layout.addWidget(self._properties_container)
 
     def _create_header(self) -> QWidget:
@@ -1102,11 +1093,9 @@ class ComponentWidget(QFrame):
         header_layout.setContentsMargins(8, 6, 8, 6)
         header_layout.setSpacing(8)
 
-        # Expand/collapse button - reflect actual state
+        # Expand/collapse button
         self._expand_btn = QToolButton()
-        self._expand_btn.setArrowType(
-            Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
-        )
+        self._expand_btn.setArrowType(Qt.ArrowType.DownArrow)
         self._expand_btn.setAutoRaise(True)
         self._expand_btn.setFixedSize(16, 16)
         self._expand_btn.clicked.connect(self._toggle_expand)
@@ -1209,9 +1198,7 @@ class ComponentWidget(QFrame):
         return badges.get(status, "")
 
     def _populate_properties(self) -> None:
-        """Populate the properties list based on Normal/Debug mode (lazy loaded)."""
-        self._properties_populated = True
-
+        """Populate the properties list based on Normal/Debug mode."""
         other_props = {}
         if self._other_component:
             other_props = {p.path: p for p in self._other_component.properties}
@@ -1378,13 +1365,8 @@ class ComponentWidget(QFrame):
         return {k: v for k, v in groups.items() if v}
 
     def _toggle_expand(self) -> None:
-        """Toggle expanded/collapsed state with lazy property loading."""
+        """Toggle expanded/collapsed state."""
         self._is_expanded = not self._is_expanded
-
-        # Lazy loading: populate properties on first expand
-        if self._is_expanded and not self._properties_populated:
-            self._populate_properties()
-
         self._properties_container.setVisible(self._is_expanded)
         self._expand_btn.setArrowType(
             Qt.ArrowType.DownArrow if self._is_expanded else Qt.ArrowType.RightArrow
@@ -1662,17 +1644,15 @@ class InspectorWidget(QScrollArea):
         if self._other_object:
             other_components = {c.file_id: c for c in self._other_object.components}
 
-        # Add component widgets - all start expanded by default
+        # Add component widgets
         for component in self._game_object.components:
             other_comp = other_components.get(component.file_id)
-
             widget = ComponentWidget(
                 component,
                 other_comp,
                 debug_mode=self._debug_mode,
                 document=self._document,
                 guid_resolver=self._guid_resolver,
-                start_expanded=True,  # Always start expanded
             )
             # Forward reference signals to InspectorWidget
             widget.reference_clicked.connect(self.reference_clicked)
