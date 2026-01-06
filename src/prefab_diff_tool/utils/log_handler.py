@@ -121,12 +121,14 @@ class MemoryLogHandler(logging.Handler):
         self._records.clear()
 
 
-def setup_logging(level: int = logging.INFO) -> MemoryLogHandler:
+def setup_logging(level: int = logging.INFO, enable_console: bool = False) -> MemoryLogHandler:
     """
     Setup logging with the memory handler.
 
     Args:
         level: Logging level for the root logger
+        enable_console: If True, also log to console (for debugging).
+                       Should be False for Windows GUI apps to avoid console flash.
 
     Returns:
         The MemoryLogHandler instance
@@ -144,19 +146,21 @@ def setup_logging(level: int = logging.INFO) -> MemoryLogHandler:
 
     root_logger.addHandler(handler)
 
-    # Also add console handler for debugging
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
-    console_handler.setFormatter(
-        logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
-    )
+    # Only add console handler if explicitly requested (for CLI debugging)
+    # Windows GUI apps should NOT use console logging to avoid window flash
+    if enable_console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(
+            logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+        )
 
-    # Check if console handler already exists
-    has_console = any(
-        isinstance(h, logging.StreamHandler) and not isinstance(h, MemoryLogHandler)
-        for h in root_logger.handlers
-    )
-    if not has_console:
-        root_logger.addHandler(console_handler)
+        # Check if console handler already exists
+        has_console = any(
+            isinstance(h, logging.StreamHandler) and not isinstance(h, MemoryLogHandler)
+            for h in root_logger.handlers
+        )
+        if not has_console:
+            root_logger.addHandler(console_handler)
 
     return handler
