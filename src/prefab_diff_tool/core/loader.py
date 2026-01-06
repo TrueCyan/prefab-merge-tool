@@ -315,6 +315,9 @@ class UnityFileLoader:
     ) -> None:
         """Load the contents of a nested prefab and add as children.
 
+        The nested prefab's root object becomes this virtual_go directly,
+        showing the root's children as virtual_go's children.
+
         Args:
             virtual_go: The virtual GameObject representing the PrefabInstance
             source_guid: GUID of the source prefab to load
@@ -339,15 +342,24 @@ class UnityFileLoader:
             # Load the source prefab (with nested loading to get full hierarchy)
             nested_doc = self.load(source_path, self._project_root, load_nested=True)
 
-            # Add the source prefab's root objects as children of this PrefabInstance
-            for root_obj in nested_doc.root_objects:
-                # Clone the hierarchy to avoid shared references
-                cloned = self._clone_game_object(root_obj, virtual_go)
-                virtual_go.children.append(cloned)
+            # Get the first root object (main prefab root)
+            if nested_doc.root_objects:
+                root_obj = nested_doc.root_objects[0]
 
-            logger.debug(
-                f"Loaded {len(nested_doc.root_objects)} root objects from {virtual_go.name}"
-            )
+                # Use the root object's name instead of file name
+                virtual_go.name = root_obj.name
+
+                # Copy root's children directly to virtual_go (skip the root level)
+                for child in root_obj.children:
+                    cloned = self._clone_game_object(child, virtual_go)
+                    virtual_go.children.append(cloned)
+
+                # Also copy components from root
+                virtual_go.components = root_obj.components
+
+                logger.debug(
+                    f"Loaded nested prefab '{virtual_go.name}' with {len(virtual_go.children)} children"
+                )
         except Exception as e:
             logger.warning(f"Failed to load nested prefab {source_path}: {e}")
 
@@ -585,8 +597,7 @@ class UnityFileLoader:
             m_children = transform_data.get("m_Children", [])
 
             if not m_children:
-                # No m_Children info, fall back to name sorting
-                go.children.sort(key=lambda x: x.name)
+                # No m_Children info, keep current order (don't sort by name)
                 continue
 
             # Build order map: transform_id -> index
@@ -597,24 +608,39 @@ class UnityFileLoader:
                     if child_transform_id:
                         child_order[child_transform_id] = idx
 
-            # Sort children by their transform's position in m_Children
-            def get_sort_key(child_go: UnityGameObject) -> tuple[int, str]:
-                # For regular GameObjects, use their transform's fileID
-                child_transform = child_go.get_transform()
-                if child_transform and child_transform.file_id in child_order:
-                    return (child_order[child_transform.file_id], child_go.name)
+            # Sort children using a helper method to avoid closure issues
+            self._sort_children_list(go.children, child_order, len(m_children))
 
-                # For PrefabInstances, check stripped transforms
-                if child_go.is_prefab_instance:
-                    # Find stripped transform that maps to this PrefabInstance
-                    for stripped_id, prefab_id in self._stripped_transforms.items():
-                        if prefab_id == child_go.file_id and stripped_id in child_order:
-                            return (child_order[stripped_id], child_go.name)
+    def _sort_children_list(
+        self,
+        children: list[UnityGameObject],
+        child_order: dict[str, int],
+        fallback_index: int,
+    ) -> None:
+        """Sort a children list by transform order.
 
-                # Fallback: put at end, sorted by name
-                return (len(m_children), child_go.name)
+        Args:
+            children: List of children to sort in place
+            child_order: Map of transform_id -> sort index
+            fallback_index: Index to use for items not found in child_order
+        """
+        def get_sort_key(child_go: UnityGameObject) -> tuple[int, str]:
+            # For regular GameObjects, use their transform's fileID
+            child_transform = child_go.get_transform()
+            if child_transform and child_transform.file_id in child_order:
+                return (child_order[child_transform.file_id], child_go.name)
 
-            go.children.sort(key=get_sort_key)
+            # For PrefabInstances, check stripped transforms
+            if child_go.is_prefab_instance and child_go.prefab_instance_id:
+                # Find stripped transform that maps to this PrefabInstance
+                for stripped_id, prefab_id in self._stripped_transforms.items():
+                    if prefab_id == child_go.prefab_instance_id and stripped_id in child_order:
+                        return (child_order[stripped_id], child_go.name)
+
+            # Fallback: put at end, sorted by name
+            return (fallback_index, child_go.name)
+
+        children.sort(key=get_sort_key)
 
 
 def load_unity_file(
