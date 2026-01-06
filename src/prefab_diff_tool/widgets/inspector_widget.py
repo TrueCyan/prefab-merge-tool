@@ -1255,7 +1255,12 @@ class ComponentWidget(QFrame):
     def _populate_properties(self) -> None:
         """Populate the properties list based on Normal/Debug mode (lazy loaded)."""
         import logging
+        import sys
         logger = logging.getLogger(__name__)
+
+        # DEBUG: Track when this runs to find console window cause
+        if sys.platform == "win32":
+            logger.info(f"[DEBUG] _populate_properties called for: {self._component.type_name}")
 
         self._properties_populated = True
 
