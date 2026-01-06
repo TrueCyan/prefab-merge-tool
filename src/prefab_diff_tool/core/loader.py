@@ -94,6 +94,10 @@ class UnityFileLoader:
         # Maps for PrefabInstance handling
         self._prefab_instances: dict[str, Any] = {}  # fileID -> PrefabInstance entry
         self._stripped_transforms: dict[str, str] = {}  # Transform fileID -> PrefabInstance fileID
+        # Track loading prefabs to prevent circular references
+        self._loading_prefabs: set[str] = set()
+        # Project root for nested prefab loading
+        self._project_root: Optional[Path] = None
 
     def _get_entry_data(self, entry: Any) -> dict:
         """Get the data dictionary from a UnityYAMLObject."""
@@ -111,6 +115,7 @@ class UnityFileLoader:
         self,
         file_path: Path,
         unity_root: Optional[Path] = None,
+        load_nested: bool = True,
     ) -> UnityDocument:
         """
         Load a Unity YAML file and convert to UnityDocument.
@@ -118,10 +123,32 @@ class UnityFileLoader:
         Args:
             file_path: Path to the Unity file (.prefab, .unity, .asset, etc.)
             unity_root: Optional Unity project root for GUID resolution
+            load_nested: If True, load contents of nested prefabs (default True)
 
         Returns:
             UnityDocument with parsed hierarchy
         """
+        file_path_str = str(file_path)
+
+        # Prevent circular reference
+        if file_path_str in self._loading_prefabs:
+            logger.warning(f"Circular reference detected, skipping: {file_path_str}")
+            return UnityDocument(file_path=file_path_str)
+
+        self._loading_prefabs.add(file_path_str)
+
+        try:
+            return self._load_internal(file_path, unity_root, load_nested)
+        finally:
+            self._loading_prefabs.discard(file_path_str)
+
+    def _load_internal(
+        self,
+        file_path: Path,
+        unity_root: Optional[Path],
+        load_nested: bool,
+    ) -> UnityDocument:
+        """Internal load implementation."""
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
         self._entries_by_id = {}
 
@@ -143,8 +170,10 @@ class UnityFileLoader:
         if project_root:
             logger.info(f"Setting up GUID resolver for project: {project_root}")
             self._guid_resolver.set_project_root(project_root)
+            self._project_root = project_root
         else:
             logger.warning(f"Could not find project root for: {file_path_obj}")
+            self._project_root = None
 
         # Index all entries by their file_id
         for entry in self._raw_doc.objects:
@@ -198,7 +227,7 @@ class UnityFileLoader:
 
             elif class_name == "PrefabInstance":
                 # Create virtual GameObject for nested prefab
-                virtual_go = self._parse_prefab_instance(entry, file_id)
+                virtual_go = self._parse_prefab_instance(entry, file_id, load_nested)
                 if virtual_go:
                     game_objects[file_id] = virtual_go
                     doc.all_objects[file_id] = virtual_go
@@ -238,9 +267,15 @@ class UnityFileLoader:
         )
 
     def _parse_prefab_instance(
-        self, entry: Any, file_id: str
+        self, entry: Any, file_id: str, load_nested: bool = True
     ) -> Optional[UnityGameObject]:
-        """Parse a PrefabInstance entry and create a virtual GameObject."""
+        """Parse a PrefabInstance entry and create a virtual GameObject.
+
+        Args:
+            entry: The raw PrefabInstance entry
+            file_id: The fileID of this PrefabInstance
+            load_nested: If True, load the source prefab's contents as children
+        """
         data = self._get_entry_data(entry)
 
         # Get source prefab reference
@@ -268,7 +303,87 @@ class UnityFileLoader:
         )
 
         logger.debug(f"Created virtual GO for PrefabInstance: {prefab_name} (fileID={file_id})")
+
+        # Load source prefab contents if requested
+        if load_nested and source_guid and self._project_root:
+            self._load_nested_prefab_contents(virtual_go, source_guid)
+
         return virtual_go
+
+    def _load_nested_prefab_contents(
+        self, virtual_go: UnityGameObject, source_guid: str
+    ) -> None:
+        """Load the contents of a nested prefab and add as children.
+
+        Args:
+            virtual_go: The virtual GameObject representing the PrefabInstance
+            source_guid: GUID of the source prefab to load
+        """
+        # Resolve GUID to file path
+        source_path = self._guid_resolver.resolve_path(source_guid)
+        if not source_path:
+            logger.debug(f"Could not resolve path for prefab GUID: {source_guid[:8]}...")
+            return
+
+        # Make path absolute if needed
+        if not source_path.is_absolute() and self._project_root:
+            source_path = self._project_root / source_path
+
+        if not source_path.exists():
+            logger.debug(f"Source prefab not found: {source_path}")
+            return
+
+        logger.debug(f"Loading nested prefab contents: {source_path}")
+
+        try:
+            # Load the source prefab (with nested loading to get full hierarchy)
+            nested_doc = self.load(source_path, self._project_root, load_nested=True)
+
+            # Add the source prefab's root objects as children of this PrefabInstance
+            for root_obj in nested_doc.root_objects:
+                # Clone the hierarchy to avoid shared references
+                cloned = self._clone_game_object(root_obj, virtual_go)
+                virtual_go.children.append(cloned)
+
+            logger.debug(
+                f"Loaded {len(nested_doc.root_objects)} root objects from {virtual_go.name}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load nested prefab {source_path}: {e}")
+
+    def _clone_game_object(
+        self, source: UnityGameObject, new_parent: Optional[UnityGameObject]
+    ) -> UnityGameObject:
+        """Create a shallow clone of a GameObject with updated parent reference.
+
+        Args:
+            source: The GameObject to clone
+            new_parent: The new parent for the cloned object
+
+        Returns:
+            Cloned GameObject with updated parent and cloned children
+        """
+        cloned = UnityGameObject(
+            file_id=f"{new_parent.file_id}_{source.file_id}" if new_parent else source.file_id,
+            name=source.name,
+            components=source.components,  # Share components (read-only display)
+            children=[],  # Will be populated below
+            parent=new_parent,
+            diff_status=source.diff_status,
+            layer=source.layer,
+            tag=source.tag,
+            is_active=source.is_active,
+            is_prefab_instance=source.is_prefab_instance,
+            source_prefab_guid=source.source_prefab_guid,
+            prefab_instance_id=source.prefab_instance_id,
+        )
+
+        # Recursively clone children
+        for child in source.children:
+            cloned_child = self._clone_game_object(child, cloned)
+            cloned.children.append(cloned_child)
+
+        return cloned
 
     def _parse_component(
         self, entry: Any, file_id: str, class_name: str
@@ -443,14 +558,69 @@ class UnityFileLoader:
                         go.parent = parent_go
                         parent_go.children.append(go)
 
-        # Sort children by name for consistent ordering
+        # Sort children by m_Children order (Unity's actual hierarchy order)
+        self._sort_children_by_transform_order(game_objects, transform_to_go)
+
+    def _sort_children_by_transform_order(
+        self,
+        game_objects: dict[str, UnityGameObject],
+        transform_to_go: dict[str, UnityGameObject],
+    ) -> None:
+        """Sort children according to Transform's m_Children order."""
         for go in game_objects.values():
-            go.children.sort(key=lambda x: x.name)
+            if not go.children:
+                continue
+
+            # Get Transform's m_Children order
+            transform = go.get_transform()
+            if not transform:
+                # For PrefabInstances without transform, keep current order
+                continue
+
+            transform_entry = self._entries_by_id.get(transform.file_id)
+            if not transform_entry:
+                continue
+
+            transform_data = self._get_entry_data(transform_entry)
+            m_children = transform_data.get("m_Children", [])
+
+            if not m_children:
+                # No m_Children info, fall back to name sorting
+                go.children.sort(key=lambda x: x.name)
+                continue
+
+            # Build order map: transform_id -> index
+            child_order: dict[str, int] = {}
+            for idx, child_ref in enumerate(m_children):
+                if isinstance(child_ref, dict):
+                    child_transform_id = str(child_ref.get("fileID", ""))
+                    if child_transform_id:
+                        child_order[child_transform_id] = idx
+
+            # Sort children by their transform's position in m_Children
+            def get_sort_key(child_go: UnityGameObject) -> tuple[int, str]:
+                # For regular GameObjects, use their transform's fileID
+                child_transform = child_go.get_transform()
+                if child_transform and child_transform.file_id in child_order:
+                    return (child_order[child_transform.file_id], child_go.name)
+
+                # For PrefabInstances, check stripped transforms
+                if child_go.is_prefab_instance:
+                    # Find stripped transform that maps to this PrefabInstance
+                    for stripped_id, prefab_id in self._stripped_transforms.items():
+                        if prefab_id == child_go.file_id and stripped_id in child_order:
+                            return (child_order[stripped_id], child_go.name)
+
+                # Fallback: put at end, sorted by name
+                return (len(m_children), child_go.name)
+
+            go.children.sort(key=get_sort_key)
 
 
 def load_unity_file(
     file_path: Path,
     unity_root: Optional[Path] = None,
+    load_nested: bool = True,
 ) -> UnityDocument:
     """
     Convenience function to load a Unity file.
@@ -458,9 +628,10 @@ def load_unity_file(
     Args:
         file_path: Path to the Unity file
         unity_root: Optional Unity project root for GUID resolution
+        load_nested: If True, load contents of nested prefabs (default True)
 
     Returns:
         UnityDocument with parsed hierarchy
     """
     loader = UnityFileLoader()
-    return loader.load(file_path, unity_root=unity_root)
+    return loader.load(file_path, unity_root=unity_root, load_nested=load_nested)
