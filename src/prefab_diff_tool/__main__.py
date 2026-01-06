@@ -9,8 +9,19 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
+
+# Redirect stdout/stderr on Windows GUI to prevent console window flash
+# This must be done BEFORE any imports that might write to stdout/stderr
+if sys.platform == "win32" and getattr(sys, 'frozen', False):
+    # Running as frozen EXE on Windows - redirect to devnull
+    try:
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
+    except Exception:
+        pass
 
 from prefab_diff_tool import __version__
 
