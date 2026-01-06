@@ -595,7 +595,16 @@ class DiffView(QWidget):
             system = platform.system()
             if system == "Windows":
                 # Windows: explorer /select,<path>
-                subprocess.run(["explorer", "/select,", str(path)], check=False)
+                # Use STARTUPINFO to prevent console window flash
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                subprocess.run(
+                    ["explorer", "/select,", str(path)],
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
             elif system == "Darwin":
                 # macOS: open -R <path>
                 subprocess.run(["open", "-R", str(path)], check=False)
