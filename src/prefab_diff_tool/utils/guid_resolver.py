@@ -62,6 +62,8 @@ class GuidResolver:
         self._index: Optional[GUIDIndex] = None
         self._db_path: Optional[Path] = None
         self._db_lock = Lock()
+        # Persistent SQLite connection (reused to avoid frequent open/close)
+        self._db_conn: Optional[sqlite3.Connection] = None
         # In-memory cache for recently resolved GUIDs (LRU-like)
         self._resolve_cache: dict[str, Optional[str]] = {}
         self._cache_max_size = 1000
@@ -99,11 +101,47 @@ class GuidResolver:
         """
         if self._project_root != project_root:
             logger.info(f"Setting project root: {project_root}")
+            # Close existing connection when changing project
+            self._close_db_connection()
             self._project_root = project_root
             self._auto_index = auto_index
             self._index = None
             self._resolve_cache.clear()
             self._init_cached_index(project_root)
+
+    def _get_db_connection(self) -> Optional[sqlite3.Connection]:
+        """Get or create persistent SQLite connection.
+
+        Returns:
+            SQLite connection, or None if DB doesn't exist
+        """
+        if self._db_conn is not None:
+            return self._db_conn
+
+        if not self._db_path or not self._db_path.exists():
+            return None
+
+        try:
+            self._db_conn = sqlite3.connect(
+                str(self._db_path),
+                timeout=5.0,
+                check_same_thread=False,  # Allow cross-thread access (we use lock)
+            )
+            logger.debug(f"Opened persistent DB connection: {self._db_path}")
+            return self._db_conn
+        except sqlite3.Error as e:
+            logger.debug(f"Failed to open DB connection: {e}")
+            return None
+
+    def _close_db_connection(self) -> None:
+        """Close the persistent SQLite connection."""
+        if self._db_conn is not None:
+            try:
+                self._db_conn.close()
+                logger.debug("Closed persistent DB connection")
+            except sqlite3.Error:
+                pass
+            self._db_conn = None
 
     def index_project(
         self,
@@ -155,7 +193,7 @@ class GuidResolver:
     def _query_db(self, guid: str) -> Optional[Path]:
         """Query the SQLite cache directly for a single GUID.
 
-        This is much faster for startup as it doesn't load all 180k+ entries.
+        Uses persistent connection to avoid frequent open/close overhead.
 
         Args:
             guid: The GUID to look up (already lowercased)
@@ -163,24 +201,23 @@ class GuidResolver:
         Returns:
             Path to the asset, or None if not found
         """
-        if not self._db_path or not self._db_path.exists():
-            return None
-
         try:
             with self._db_lock:
-                conn = sqlite3.connect(str(self._db_path), timeout=5.0)
-                try:
-                    cursor = conn.execute(
-                        "SELECT path FROM guid_cache WHERE guid = ?",
-                        (guid,)
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        return Path(row[0])
-                finally:
-                    conn.close()
+                conn = self._get_db_connection()
+                if conn is None:
+                    return None
+
+                cursor = conn.execute(
+                    "SELECT path FROM guid_cache WHERE guid = ?",
+                    (guid,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return Path(row[0])
         except sqlite3.Error as e:
             logger.debug(f"DB query error for GUID {guid[:8]}...: {e}")
+            # Connection might be stale, close it so next call will reconnect
+            self._close_db_connection()
 
         return None
 
@@ -396,11 +433,13 @@ class GuidResolver:
     def clear_cache(self) -> None:
         """Clear the GUID cache."""
         self._index = None
+        self._close_db_connection()
         if self._cached_index:
             self._cached_index.invalidate()
 
     def close(self) -> None:
         """Cleanup resources."""
+        self._close_db_connection()
         self._index = None
         self._cached_index = None
 
