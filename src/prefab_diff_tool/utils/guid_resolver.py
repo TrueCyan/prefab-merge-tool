@@ -1,14 +1,35 @@
 """
-Unity GUID resolver for finding asset names from GUIDs.
+Unity GUID resolver - wrapper around unityflow's asset tracking.
 
-Searches Unity project .meta files to resolve GUIDs to actual asset names.
+Provides a simple interface for resolving GUIDs to asset names/paths
+using unityflow's CachedGUIDIndex.
+
+Supports two modes:
+1. Lazy mode (default): Query SQLite directly on each resolve() call.
+   - Fast startup, no memory overhead
+   - Good for viewing a single file with few GUID lookups
+2. Full index mode: Load all GUIDs into memory first.
+   - Slower startup (~5s for 180k assets)
+   - Fast repeated lookups
+   - Good for batch operations
 """
 
-import os
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import sqlite3
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Optional
+
+from unityflow.asset_tracker import (
+    CachedGUIDIndex,
+    GUIDIndex,
+    find_unity_project_root,
+    CACHE_DIR_NAME,
+    CACHE_DB_NAME,
+)
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Progress callback type: (current, total, message) -> None
 ProgressCallback = Callable[[int, int, str], None]
@@ -16,29 +37,39 @@ ProgressCallback = Callable[[int, int, str], None]
 
 class GuidResolver:
     """
-    Resolves Unity GUIDs to asset names by searching .meta files.
+    Resolves Unity GUIDs to asset names using unityflow's CachedGUIDIndex.
 
-    Caches results for performance. Supports auto-indexing for bulk lookups.
+    This is a thin wrapper providing a convenient interface for the prefab-diff-tool.
+
+    Supports two modes:
+    - Lazy mode (default): Query SQLite directly per resolve() call
+    - Full index mode: Load all GUIDs into memory (set auto_index=True and call index_project())
     """
 
-    # Pattern to extract GUID from .meta file content
-    GUID_PATTERN = re.compile(r"guid:\s*([a-fA-F0-9]{32})")
-
-    def __init__(self, project_root: Optional[Path] = None, auto_index: bool = True):
+    def __init__(self, project_root: Optional[Path] = None, auto_index: bool = False):
         """
         Initialize the resolver.
 
         Args:
             project_root: Unity project root path (containing Assets folder).
                          If None, will be detected from file paths.
-            auto_index: If True, automatically index the project on first resolve.
-                       This is faster for multiple lookups. Default is True.
+            auto_index: If True, load full index on first resolve (slow for large projects).
+                       If False (default), use lazy SQLite queries (fast startup).
         """
         self._project_root = project_root
-        self._cache: dict[str, Optional[str]] = {}  # guid -> asset name
-        self._path_cache: dict[str, Optional[Path]] = {}  # guid -> full asset path
-        self._indexed = False
         self._auto_index = auto_index
+        self._cached_index: Optional[CachedGUIDIndex] = None
+        self._index: Optional[GUIDIndex] = None
+        self._db_path: Optional[Path] = None
+        self._db_lock = Lock()
+        # Persistent SQLite connection (reused to avoid frequent open/close)
+        self._db_conn: Optional[sqlite3.Connection] = None
+        # In-memory cache for recently resolved GUIDs (LRU-like)
+        self._resolve_cache: dict[str, Optional[str]] = {}
+        self._cache_max_size = 1000
+
+        if project_root:
+            self._init_cached_index(project_root)
 
     @staticmethod
     def find_project_root(file_path: Path) -> Optional[Path]:
@@ -51,192 +82,170 @@ class GuidResolver:
         Returns:
             Path to project root (parent of Assets folder), or None if not found
         """
-        current = file_path.resolve()
+        return find_unity_project_root(file_path)
 
-        # If it's a file, start from parent
-        if current.is_file():
-            current = current.parent
+    def _init_cached_index(self, project_root: Path) -> None:
+        """Initialize the cached GUID index and DB path."""
+        logger.debug(f"Initializing CachedGUIDIndex for: {project_root}")
+        self._cached_index = CachedGUIDIndex(project_root)
+        self._db_path = project_root / CACHE_DIR_NAME / CACHE_DB_NAME
+        logger.debug(f"GUID cache DB path: {self._db_path}")
 
-        # Search upward for Assets folder
-        while current != current.parent:  # Stop at filesystem root
-            assets_path = current / "Assets"
-            project_settings = current / "ProjectSettings"
-
-            # Unity project has both Assets and ProjectSettings folders
-            if assets_path.is_dir() and project_settings.is_dir():
-                return current
-
-            # Also check if current folder IS the Assets folder
-            if current.name == "Assets" and current.is_dir():
-                parent = current.parent
-                if (parent / "ProjectSettings").is_dir():
-                    return parent
-
-            current = current.parent
-
-        return None
-
-    def set_project_root(self, project_root: Path, auto_index: bool = True) -> None:
-        """Set project root and clear cache.
+    def set_project_root(self, project_root: Path, auto_index: bool = False) -> None:
+        """Set project root and initialize cache.
 
         Args:
             project_root: Unity project root path.
-            auto_index: If True, project will be indexed on first resolve.
+            auto_index: If True, load full index on first resolve (slow).
+                       If False (default), use lazy SQLite queries (fast).
         """
         if self._project_root != project_root:
+            logger.info(f"Setting project root: {project_root}")
+            # Close existing connection when changing project
+            self._close_db_connection()
             self._project_root = project_root
-            self._cache.clear()
-            self._path_cache.clear()
-            self._indexed = False
             self._auto_index = auto_index
+            self._index = None
+            self._resolve_cache.clear()
+            self._init_cached_index(project_root)
+
+    def _get_db_connection(self) -> Optional[sqlite3.Connection]:
+        """Get or create persistent SQLite connection.
+
+        Returns:
+            SQLite connection, or None if DB doesn't exist
+        """
+        if self._db_conn is not None:
+            return self._db_conn
+
+        if not self._db_path or not self._db_path.exists():
+            return None
+
+        try:
+            self._db_conn = sqlite3.connect(
+                str(self._db_path),
+                timeout=5.0,
+                check_same_thread=False,  # Allow cross-thread access (we use lock)
+            )
+            logger.debug(f"Opened persistent DB connection: {self._db_path}")
+            return self._db_conn
+        except sqlite3.Error as e:
+            logger.debug(f"Failed to open DB connection: {e}")
+            return None
+
+    def _close_db_connection(self) -> None:
+        """Close the persistent SQLite connection."""
+        if self._db_conn is not None:
+            try:
+                self._db_conn.close()
+                logger.debug("Closed persistent DB connection")
+            except sqlite3.Error:
+                pass
+            self._db_conn = None
 
     def index_project(
         self,
         progress_callback: Optional[ProgressCallback] = None,
-        max_workers: Optional[int] = None,
+        include_package_cache: bool = True,
     ) -> None:
         """
-        Index all .meta files in the project for fast GUID lookup.
-
-        Call this once after setting project root for better performance
-        when resolving many GUIDs.
+        Index the project for fast GUID lookup.
 
         Args:
             progress_callback: Optional callback for progress updates.
                               Called with (current, total, message).
-            max_workers: Max threads for parallel processing.
-                        Defaults to min(32, cpu_count + 4).
+            include_package_cache: If True, include Library/PackageCache
         """
-        if not self._project_root or self._indexed:
+        if not self._cached_index:
+            logger.warning("index_project called without project root")
             if progress_callback:
-                progress_callback(1, 1, "Already indexed")
-            return
-
-        assets_path = self._project_root / "Assets"
-        if not assets_path.exists():
-            if progress_callback:
-                progress_callback(1, 1, "No Assets folder")
-            return
-
-        # Collect all .meta file paths first (fast operation)
-        if progress_callback:
-            progress_callback(0, 0, "Scanning for .meta files...")
-
-        meta_files: list[Path] = []
-        search_paths = [assets_path]
-        packages_path = self._project_root / "Packages"
-        if packages_path.exists():
-            search_paths.append(packages_path)
-
-        for search_path in search_paths:
-            # Use os.walk for faster directory traversal
-            for root, _, files in os.walk(search_path):
-                for filename in files:
-                    if filename.endswith(".meta"):
-                        meta_files.append(Path(root) / filename)
-
-        total = len(meta_files)
-        if total == 0:
-            self._indexed = True
-            if progress_callback:
-                progress_callback(1, 1, "No .meta files found")
+                progress_callback(1, 1, "No project root set")
             return
 
         if progress_callback:
-            progress_callback(0, total, f"Indexing {total} assets...")
+            progress_callback(0, 1, "인덱싱 중...")
 
-        # Use parallel processing for file I/O
-        if max_workers is None:
-            max_workers = min(32, (os.cpu_count() or 1) + 4)
+        # Wrap the progress callback to add message
+        def unityflow_progress(current: int, total: int) -> None:
+            if progress_callback:
+                if total > 0:
+                    progress_callback(current, total, f"인덱싱 중... {current:,}/{total:,}")
+                else:
+                    progress_callback(current, 1, "인덱싱 중...")
 
-        processed = 0
-        batch_size = max(1, total // 100)  # Update progress ~100 times
+        # Use unityflow's cached index with progress callback
+        logger.info(f"Starting index with include_packages={include_package_cache}")
+        self._index = self._cached_index.get_index(
+            include_packages=include_package_cache,
+            progress_callback=unityflow_progress,
+        )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_path = {
-                executor.submit(self._process_meta_file, meta_file): meta_file
-                for meta_file in meta_files
-            }
-
-            # Process results as they complete
-            for future in as_completed(future_to_path):
-                result = future.result()
-                if result:
-                    guid, asset_name, asset_path = result
-                    self._cache[guid] = asset_name
-                    self._path_cache[guid] = asset_path
-
-                processed += 1
-
-                # Periodic progress callback
-                if progress_callback and processed % batch_size == 0:
-                    progress_callback(processed, total, f"Indexed {processed}/{total} assets")
-
-        self._indexed = True
+        count = len(self._index) if self._index else 0
+        logger.info(f"Indexing complete: {count} assets")
 
         if progress_callback:
-            progress_callback(total, total, f"Indexing complete: {len(self._cache)} assets")
-
-    def _process_meta_file(self, meta_file: Path) -> Optional[tuple[str, str, Path]]:
-        """Process a single .meta file and return (guid, asset_name, asset_path) or None."""
-        try:
-            guid = self._extract_guid_from_meta(meta_file)
-            if guid:
-                asset_path = meta_file.with_suffix("")
-                asset_name = asset_path.stem
-
-                # Include extension for non-script assets
-                if asset_path.suffix and asset_path.suffix != ".cs":
-                    asset_name = asset_path.name
-
-                return (guid, asset_name, asset_path)
-        except OSError:
-            pass
-        return None
-
-    def get_meta_file_count(self) -> Optional[int]:
-        """
-        Get estimated count of .meta files in the project.
-        Returns None if project root is not set.
-        """
-        if not self._project_root:
-            return None
-
-        count = 0
-        assets_path = self._project_root / "Assets"
-        if assets_path.exists():
-            for root, _, files in os.walk(assets_path):
-                count += sum(1 for f in files if f.endswith(".meta"))
-
-        packages_path = self._project_root / "Packages"
-        if packages_path.exists():
-            for root, _, files in os.walk(packages_path):
-                count += sum(1 for f in files if f.endswith(".meta"))
-
-        return count
+            progress_callback(1, 1, f"인덱싱 완료: {count:,}개 에셋")
 
     def is_indexed(self) -> bool:
         """Check if the project has been indexed."""
-        return self._indexed
+        return self._index is not None
 
-    def _extract_guid_from_meta(self, meta_path: Path) -> Optional[str]:
-        """Extract GUID from a .meta file."""
+    def _query_db(self, guid: str) -> Optional[Path]:
+        """Query the SQLite cache directly for a single GUID.
+
+        Uses persistent connection to avoid frequent open/close overhead.
+
+        Args:
+            guid: The GUID to look up (already lowercased)
+
+        Returns:
+            Path to the asset, or None if not found
+        """
         try:
-            # Only read first few lines - GUID is always near the top
-            with open(meta_path, encoding="utf-8") as f:
-                content = f.read(500)  # GUID is in first ~100 bytes typically
+            with self._db_lock:
+                conn = self._get_db_connection()
+                if conn is None:
+                    return None
 
-            match = self.GUID_PATTERN.search(content)
-            if match:
-                return match.group(1).lower()
-        except (OSError, UnicodeDecodeError):
-            pass
+                cursor = conn.execute(
+                    "SELECT path FROM guid_cache WHERE guid = ?",
+                    (guid,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return Path(row[0])
+        except sqlite3.Error as e:
+            logger.debug(f"DB query error for GUID {guid[:8]}...: {e}")
+            # Connection might be stale, close it so next call will reconnect
+            self._close_db_connection()
+
         return None
+
+    def _ensure_db_exists(self) -> bool:
+        """Ensure the GUID cache database exists, creating if needed.
+
+        Returns:
+            True if DB exists or was created successfully
+        """
+        if self._db_path and self._db_path.exists():
+            return True
+
+        # Need to build the index first to create the DB
+        if self._cached_index:
+            logger.info("Building GUID cache (first run)...")
+            self._index = self._cached_index.get_index(include_packages=True)
+            count = len(self._index) if self._index else 0
+            logger.info(f"GUID cache built: {count:,} entries")
+            return self._db_path and self._db_path.exists()
+
+        return False
 
     def resolve(self, guid: str) -> Optional[str]:
         """
         Resolve a GUID to an asset name.
+
+        Uses lazy SQLite queries by default for fast startup.
+        Falls back to full index if auto_index=True was set.
 
         Args:
             guid: The GUID to resolve (32 hex characters)
@@ -247,76 +256,62 @@ class GuidResolver:
         if not guid:
             return None
 
+        original_guid = guid
         guid = guid.lower()
 
-        # Check cache first
-        if guid in self._cache:
-            return self._cache[guid]
+        # Check in-memory cache first (O(1))
+        if guid in self._resolve_cache:
+            return self._resolve_cache[guid]
 
-        # If not indexed and we have a project root
-        if not self._indexed and self._project_root:
-            # Auto-index the entire project for faster bulk lookups
-            if self._auto_index:
-                self.index_project()
-                # After indexing, check cache again
-                if guid in self._cache:
-                    return self._cache[guid]
-            else:
-                # Do a targeted search (slower for multiple lookups)
-                result = self._search_for_guid(guid)
-                self._cache[guid] = result
+        # If full index is loaded, use it
+        if self._index is not None:
+            path = self._index.get_path(guid)
+            if path:
+                result = self._path_to_name(path)
+                self._add_to_cache(guid, result)
                 return result
-
-        return None
-
-    def _search_for_guid(self, guid: str) -> Optional[str]:
-        """Search for a specific GUID in meta files."""
-        if not self._project_root:
+            self._add_to_cache(guid, None)
             return None
 
-        assets_path = self._project_root / "Assets"
-        if not assets_path.exists():
+        # Auto-index if requested (slow startup mode)
+        if self._auto_index and self._cached_index:
+            logger.debug("Auto-indexing on first resolve (slow mode)")
+            self._index = self._cached_index.get_index(include_packages=True)
+            return self.resolve(original_guid)  # Retry with index
+
+        # Lazy mode: query SQLite directly (fast startup)
+        if not self._ensure_db_exists():
+            logger.warning(f"Cannot resolve GUID {guid[:8]}...: no cache available")
             return None
 
-        # Search in Assets and Packages
-        search_paths = [assets_path]
-        packages_path = self._project_root / "Packages"
-        if packages_path.exists():
-            search_paths.append(packages_path)
+        path = self._query_db(guid)
+        if path:
+            result = self._path_to_name(path)
+            logger.debug(f"Resolved GUID {guid[:8]}... -> {result}")
+            self._add_to_cache(guid, result)
+            return result
 
-        for search_path in search_paths:
-            for meta_file in search_path.rglob("*.meta"):
-                try:
-                    file_guid = self._extract_guid_from_meta(meta_file)
-                    if file_guid == guid:
-                        asset_path = meta_file.with_suffix("")
-                        asset_name = asset_path.stem
-
-                        # Include extension for non-script assets
-                        if asset_path.suffix and asset_path.suffix != ".cs":
-                            asset_name = asset_path.name
-
-                        return asset_name
-                except OSError:
-                    continue
-
+        # Not found
+        logger.debug(f"Failed to resolve GUID: {original_guid}")
+        self._add_to_cache(guid, None)
         return None
 
-    def resolve_with_type(self, guid: str) -> tuple[Optional[str], Optional[str]]:
-        """
-        Resolve a GUID to asset name and type.
+    def _path_to_name(self, path: Path) -> str:
+        """Convert a path to a display name."""
+        if path.suffix and path.suffix != ".cs":
+            return path.name
+        return path.stem
 
-        Args:
-            guid: The GUID to resolve
+    def _add_to_cache(self, guid: str, name: Optional[str]) -> None:
+        """Add a resolved GUID to the in-memory cache."""
+        # Simple cache eviction when too large
+        if len(self._resolve_cache) >= self._cache_max_size:
+            # Remove oldest entries (first 100)
+            keys_to_remove = list(self._resolve_cache.keys())[:100]
+            for key in keys_to_remove:
+                del self._resolve_cache[key]
 
-        Returns:
-            Tuple of (asset_name, asset_type) or (None, None)
-        """
-        # Reuse resolve() to leverage caching and avoid duplicate rglob scans
-        name = self.resolve(guid)
-        if name:
-            return name, self._guess_asset_type(name)
-        return None, None
+        self._resolve_cache[guid] = name
 
     def resolve_path(self, guid: str) -> Optional[Path]:
         """
@@ -333,14 +328,35 @@ class GuidResolver:
 
         guid = guid.lower()
 
-        # Check path cache first
-        if guid in self._path_cache:
-            return self._path_cache[guid]
+        # If full index is loaded, use it
+        if self._index is not None:
+            return self._index.get_path(guid)
 
-        # Ensure indexed (this will also populate path cache)
-        self.resolve(guid)
+        # Auto-index if requested
+        if self._auto_index and self._cached_index:
+            self._index = self._cached_index.get_index(include_packages=True)
+            return self._index.get_path(guid) if self._index else None
 
-        return self._path_cache.get(guid)
+        # Lazy mode: query SQLite directly
+        if not self._ensure_db_exists():
+            return None
+
+        return self._query_db(guid)
+
+    def resolve_with_type(self, guid: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Resolve a GUID to asset name and type.
+
+        Args:
+            guid: The GUID to resolve
+
+        Returns:
+            Tuple of (asset_name, asset_type) or (None, None)
+        """
+        name = self.resolve(guid)
+        if name:
+            return name, self._guess_asset_type(name)
+        return None, None
 
     def _guess_asset_type(self, filename: str) -> str:
         """Guess asset type from filename extension."""
@@ -391,18 +407,41 @@ class GuidResolver:
             ".playable": "Playable",
         }
 
-        # Get extension
         if "." in filename:
             ext = "." + filename.rsplit(".", 1)[-1].lower()
             return ext_map.get(ext, "Asset")
 
         return "Asset"
 
+    def get_index_stats(self) -> dict:
+        """Get statistics about the current index for debugging."""
+        if self._index is None:
+            return {"indexed": False, "count": 0}
+
+        # Count by extension
+        ext_counts: dict[str, int] = {}
+        for path in self._index.guid_to_path.values():
+            ext = path.suffix.lower() if path.suffix else "(no ext)"
+            ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+        return {
+            "indexed": True,
+            "count": len(self._index),
+            "by_extension": ext_counts,
+        }
+
     def clear_cache(self) -> None:
         """Clear the GUID cache."""
-        self._cache.clear()
-        self._path_cache.clear()
-        self._indexed = False
+        self._index = None
+        self._close_db_connection()
+        if self._cached_index:
+            self._cached_index.invalidate()
+
+    def close(self) -> None:
+        """Cleanup resources."""
+        self._close_db_connection()
+        self._index = None
+        self._cached_index = None
 
 
 # Global resolver instance for convenience

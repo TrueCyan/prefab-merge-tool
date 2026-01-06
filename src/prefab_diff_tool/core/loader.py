@@ -4,6 +4,7 @@ Unity file loader using unityflow.
 Converts Unity YAML files to our internal UnityDocument model.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +18,9 @@ from prefab_diff_tool.core.unity_model import (
     UnityProperty,
 )
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 # Additional Unity class IDs not in unityflow's mapping
@@ -118,13 +122,25 @@ class UnityFileLoader:
         self._entries_by_id = {}
 
         # Find Unity project root and setup GUID resolver
+        # Priority: provided unity_root > auto-detect (non-temp only)
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
-        project_root = GuidResolver.find_project_root(file_path_obj)
-        # Use provided unity_root if auto-detection fails (e.g., for temp files)
-        if not project_root and unity_root:
+        project_root = None
+
+        # Use provided unity_root first (reliable)
+        if unity_root:
             project_root = unity_root
+            logger.info(f"Using provided unity_root: {project_root}")
+        else:
+            # Try auto-detection (may find temp directory - will be validated later)
+            project_root = GuidResolver.find_project_root(file_path_obj)
+            if project_root:
+                logger.debug(f"Auto-detected project root: {project_root}")
+
         if project_root:
+            logger.info(f"Setting up GUID resolver for project: {project_root}")
             self._guid_resolver.set_project_root(project_root)
+        else:
+            logger.warning(f"Could not find project root for: {file_path_obj}")
 
         # Index all entries by their file_id
         for entry in self._raw_doc.objects:
@@ -201,10 +217,15 @@ class UnityFileLoader:
             script_ref = data.get("m_Script")
             if script_ref:
                 comp.script_guid = self._extract_guid(script_ref)
+                logger.debug(f"MonoBehaviour script_ref: {script_ref}, extracted GUID: {comp.script_guid}")
                 # Try to get script name from data first, then resolve from GUID
                 comp.script_name = self._guess_script_name(data)
                 if not comp.script_name and comp.script_guid:
                     comp.script_name = self._guid_resolver.resolve(comp.script_guid)
+                    if comp.script_name:
+                        logger.debug(f"Resolved script GUID {comp.script_guid[:8]}... -> {comp.script_name}")
+                    else:
+                        logger.warning(f"Failed to resolve script GUID: {comp.script_guid}")
 
         # Extract all properties
         comp.properties = self._extract_properties(data)

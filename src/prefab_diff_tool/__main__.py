@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -96,6 +97,15 @@ def validate_files(paths: list[Path]) -> bool:
 def main() -> int:
     args = parse_args()
 
+    # Setup logging early so detection logs are captured
+    from prefab_diff_tool.utils.log_handler import setup_logging
+    if args.debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    setup_logging(level=log_level)
+    logger = logging.getLogger(__name__)
+
     # Determine mode
     if args.merge:
         mode = "merge"
@@ -123,11 +133,17 @@ def main() -> int:
     # 3. Auto-detect from file paths
     from prefab_diff_tool.utils.vcs_detector import detect_unity_project_root
 
+    logger.debug(f"CLI --workspace-root: {args.workspace_root}")
+    logger.debug(f"CLI --depot-path: {args.depot_path}")
+    logger.debug(f"CLI files: {files}")
+
     unity_root = detect_unity_project_root(
         files,
         workspace_root=args.workspace_root,
         depot_path=args.depot_path,
     )
+
+    logger.info(f"Detected unity_root: {unity_root}")
 
     if args.debug:
         print(f"[DEBUG] --workspace-root: {args.workspace_root}", file=sys.stderr)

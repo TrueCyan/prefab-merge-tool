@@ -239,9 +239,9 @@ class MergeView(QWidget):
             self._loading_worker.cancel()
             self._loading_worker.wait()
 
-        # Start async loading
+        # Start async loading with polling-based progress
         self._loading_worker = FileLoadingWorker([base, ours, theirs], unity_root=self._unity_root)
-        self._loading_worker.progress.connect(self._on_loading_progress)
+        self._loading_widget.start_polling(self._loading_worker.progress_state)
         self._loading_worker.file_loaded.connect(self._on_file_loaded)
         self._loading_worker.indexing_started.connect(self._on_indexing_started)
         self._loading_worker.finished.connect(self._on_loading_finished)
@@ -267,6 +267,9 @@ class MergeView(QWidget):
 
     def _on_loading_finished(self) -> None:
         """Handle loading completion."""
+        # Stop polling
+        self._loading_widget.stop_polling()
+
         try:
             # Perform 3-way merge
             self._perform_merge()
@@ -297,6 +300,9 @@ class MergeView(QWidget):
 
     def _on_loading_error(self, error: str) -> None:
         """Handle loading error."""
+        # Stop polling (don't show 100% on error)
+        self._loading_widget.stop_polling(error=True)
+
         print(f"Error loading merge: {error}")
         self._loading_widget.update_progress(0, 1, f"Error: {error}")
         # Switch to content view after a delay
