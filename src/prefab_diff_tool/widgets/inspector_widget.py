@@ -7,7 +7,7 @@ similar to Unity's Inspector window.
 
 from typing import Any, Optional
 
-from PySide6.QtCore import Qt, Signal, QThread, QObject
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -797,27 +797,8 @@ class ColorFieldWidget(QWidget):
         layout.addStretch()
 
 
-class GuidResolverWorker(QObject):
-    """Background worker for async GUID resolution."""
-
-    resolved = Signal(str, str, str)  # guid, name, asset_type
-
-    def __init__(self, guid_resolver: "GuidResolver", parent: Optional[QObject] = None):
-        super().__init__(parent)
-        self._resolver = guid_resolver
-
-    def resolve(self, guid: str) -> None:
-        """Resolve GUID in background and emit result."""
-        if self._resolver:
-            name, asset_type = self._resolver.resolve_with_type(guid)
-            self.resolved.emit(guid, name or "", asset_type or "Asset")
-
-
 class ReferenceFieldWidget(QWidget):
-    """Unity-style object reference field with click-to-navigate support.
-
-    Uses async GUID resolution to avoid blocking the UI for external references.
-    """
+    """Unity-style object reference field with click-to-navigate support."""
 
     # Signals for navigation
     reference_clicked = Signal(str, str)  # file_id, guid
@@ -1254,18 +1235,7 @@ class ComponentWidget(QFrame):
 
     def _populate_properties(self) -> None:
         """Populate the properties list based on Normal/Debug mode (lazy loaded)."""
-        import logging
-        import sys
-        logger = logging.getLogger(__name__)
-
-        # DEBUG: Track when this runs to find console window cause
-        if sys.platform == "win32":
-            logger.info(f"[DEBUG] _populate_properties called for: {self._component.type_name}")
-
         self._properties_populated = True
-
-        # Debug logging only
-        logger.debug(f"Populating properties for {self._component.type_name} ({len(self._component.properties)} props)")
 
         other_props = {}
         if self._other_component:
@@ -1281,8 +1251,6 @@ class ComponentWidget(QFrame):
 
         # Filter properties based on mode and component type
         visible_props = self._get_visible_properties()
-
-        logger.debug(f"  -> {len(visible_props)} visible after filtering")
 
         # For Transform, use special layout (no grouping, Unity Inspector style)
         if self._component.type_name in ("Transform", "RectTransform") and not self._debug_mode:
