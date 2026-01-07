@@ -161,6 +161,9 @@ class UnityFileLoader:
     ) -> Optional[UnityGameObject]:
         """Convert a unityflow HierarchyNode to our UnityGameObject.
 
+        For PrefabInstance nodes with loaded nested content, merges the
+        PrefabInstance with its nested root to avoid duplicate display.
+
         Args:
             node: The unityflow HierarchyNode to convert
             parent: The parent UnityGameObject (or None for root)
@@ -168,6 +171,16 @@ class UnityFileLoader:
         Returns:
             Converted UnityGameObject
         """
+        # Check if this is a PrefabInstance with loaded nested content
+        # In this case, merge with the nested root to avoid duplicate display
+        nested_root = None
+        if node.is_prefab_instance and node.nested_prefab_loaded and node.children:
+            # Find the nested prefab's root (first child that is_from_nested_prefab)
+            for child in node.children:
+                if child.is_from_nested_prefab:
+                    nested_root = child
+                    break
+
         # Create UnityGameObject from HierarchyNode
         go = UnityGameObject(
             file_id=str(node.file_id),
@@ -178,16 +191,49 @@ class UnityFileLoader:
             prefab_instance_id=str(node.prefab_instance_id) if node.prefab_instance_id else None,
         )
 
-        # Convert components
-        for comp_info in node.components:
-            comp = self._convert_component_info(comp_info)
-            go.components.append(comp)
+        # Collect components - merge if nested root exists
+        components_by_type: dict[str, ComponentInfo] = {}
 
-        # Convert children recursively (nested prefab contents already loaded by unityflow)
-        for child_node in node.children:
-            child_go = self._convert_hierarchy_node(child_node, go)
-            if child_go:
-                go.children.append(child_go)
+        # First add nested root's components (original/base)
+        if nested_root:
+            for comp_info in nested_root.components:
+                key = comp_info.script_name or comp_info.class_name
+                components_by_type[key] = comp_info
+
+        # Then add/override with PrefabInstance's components (modifications)
+        for comp_info in node.components:
+            key = comp_info.script_name or comp_info.class_name
+            components_by_type[key] = comp_info
+
+        # Convert components maintaining order (nested root order, then any new from PrefabInstance)
+        seen_keys = set()
+        if nested_root:
+            for comp_info in nested_root.components:
+                key = comp_info.script_name or comp_info.class_name
+                comp = self._convert_component_info(components_by_type[key])
+                go.components.append(comp)
+                seen_keys.add(key)
+
+        for comp_info in node.components:
+            key = comp_info.script_name or comp_info.class_name
+            if key not in seen_keys:
+                comp = self._convert_component_info(comp_info)
+                go.components.append(comp)
+                seen_keys.add(key)
+
+        # Convert children
+        if nested_root:
+            # Use nested root's children (they contain the actual hierarchy)
+            for child_node in nested_root.children:
+                child_go = self._convert_hierarchy_node(child_node, go)
+                if child_go:
+                    go.children.append(child_go)
+        else:
+            # Normal case - use node's children directly
+            for child_node in node.children:
+                child_go = self._convert_hierarchy_node(child_node, go)
+                if child_go:
+                    go.children.append(child_go)
 
         return go
 
