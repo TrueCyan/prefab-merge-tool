@@ -41,34 +41,62 @@ def build_hierarchy(doc, guid_index=None, ...):
 
 **효과**: 1600ms → 80ms (20배 개선)
 
-### 1.2 Unity 패키지 GUID 인덱싱
+### 1.2 패키지 GUID 인덱싱 확장
 
-**문제**: Unity 패키지 스크립트(Image, Button 등)가 해석되지 않음
-- 현재: `Assets/` 폴더만 인덱싱
-- 결과: 42개 의존성 중 10개 unresolved
+**현재 인덱싱 범위**: `Assets/` 폴더만 (173,551개)
 
-**해결**: 패키지 경로도 인덱싱
+**미인덱싱으로 인한 unresolved**:
+
+| 소스 | 예시 | 원인 |
+|------|------|------|
+| Unity 패키지 | Image, Button, VerticalLayoutGroup | `Library/PackageCache/` 미인덱싱 |
+| 로컬 패키지 | CommentaryComponent (MyBox) | `NK.Packages/` (file: 참조) 미인덱싱 |
+
+**해결 - 인덱싱 대상 추가**:
+
+1. `Library/PackageCache/` ← Unity Registry 패키지
+2. `Packages/` ← Packages 폴더 내 로컬 패키지
+3. `manifest.json` file: 참조 경로 ← `../../NK.Packages/` 같은 상대 경로
 
 ```python
 def build_guid_index(project_root: Path) -> GUIDIndex:
     index = GUIDIndex()
 
-    # 1. Assets (기존)
+    # 1. Assets 폴더 (기존)
     index.scan_directory(project_root / "Assets")
 
-    # 2. Library/PackageCache (Unity Registry 패키지)
+    # 2. Library/PackageCache (Unity 패키지)
     package_cache = project_root / "Library" / "PackageCache"
     if package_cache.exists():
         index.scan_directory(package_cache)
 
-    # 3. Packages/manifest.json의 file: 참조 (로컬 패키지)
-    for path in parse_local_packages(project_root / "Packages" / "manifest.json"):
-        index.scan_directory(path)
+    # 3. manifest.json의 file: 참조 (로컬 패키지)
+    manifest = project_root / "Packages" / "manifest.json"
+    for dep_name, dep_value in load_manifest(manifest).get("dependencies", {}).items():
+        if dep_value.startswith("file:"):
+            # file:../../NK.Packages/com.domybest.mybox@1.7.0 같은 경로 해석
+            relative_path = dep_value[5:]  # "file:" 제거
+            package_path = (project_root / "Packages" / relative_path).resolve()
+            if package_path.exists():
+                index.scan_directory(package_path)
 
     return index
 ```
 
-**효과**: Image, Button, LayoutGroup 등 모든 Unity UI 컴포넌트 해석 가능
+**해결되는 unresolved 목록**:
+
+| GUID | 컴포넌트 | 패키지 |
+|------|----------|--------|
+| `ee85920dbe024568b894f71d5bb75c1e` | CommentaryComponent | MyBox |
+| `59f8146938fff824cb5fd77236b75775` | VerticalLayoutGroup | Unity UI |
+| `fe87c0e1cc204ed48ad3b37840f39efc` | Image | Unity UI |
+| `306cc8c2b49d7114eaa3623786fc2126` | LayoutElement | Unity UI |
+| `4e29b1a8efbd4b44bb3f3716e73f07ff` | Button | Unity UI |
+| `30649d3a9faa99c48a7b1166b86bf2a0` | HorizontalLayoutGroup | Unity UI |
+| `3245ec927659c4140ac4f8d17403cc18` | ContentSizeFitter | Unity UI |
+| ... | 나머지 3개 | Unity UI / 기타 |
+
+**효과**: 42개 의존성 중 10개 unresolved → 0개 (100% 해석)
 
 ---
 
