@@ -856,6 +856,11 @@ class ReferenceFieldWidget(QWidget):
                 # Component found but no owner
                 return f"({comp_name})"
 
+            # Check if it's a stripped object (reference to component inside nested prefab)
+            prefab = self._document.resolve_stripped_reference(file_id_str)
+            if prefab:
+                return f"{prefab.name} (nested)"
+
         # Fallback
         return f"(ID: {file_id})"
 

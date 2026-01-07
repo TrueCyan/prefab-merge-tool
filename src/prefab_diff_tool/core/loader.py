@@ -19,6 +19,7 @@ from unityflow import (
     get_cached_guid_index,
     find_unity_project_root,
     GUIDIndex,
+    get_prefab_instance_for_stripped,
 )
 
 from prefab_diff_tool.core.unity_model import (
@@ -153,10 +154,37 @@ class UnityFileLoader:
                 doc.root_objects.append(root_go)
                 self._collect_all_objects(root_go, doc)
 
+        # Build stripped object -> PrefabInstance mapping for reference resolution
+        self._build_stripped_mapping(doc)
+
         # Sort root objects by name for consistent ordering
         doc.root_objects.sort(key=lambda x: x.name)
 
         return doc
+
+    def _build_stripped_mapping(self, doc: UnityDocument) -> None:
+        """Build mapping from stripped objects to their parent PrefabInstances.
+
+        This is needed to resolve references that point to stripped components
+        (placeholders for components inside nested prefabs).
+        """
+        if not self._raw_doc:
+            return
+
+        for entry in self._raw_doc.objects:
+            if not entry.stripped:
+                continue
+
+            file_id = str(entry.file_id)
+            # Skip if already in our objects (shouldn't happen for stripped)
+            if file_id in doc.all_objects or file_id in doc.all_components:
+                continue
+
+            # Get the parent PrefabInstance for this stripped object
+            prefab_id = get_prefab_instance_for_stripped(self._raw_doc, entry.file_id)
+            if prefab_id:
+                doc.stripped_to_prefab[file_id] = str(prefab_id)
+                logger.debug(f"Mapped stripped {entry.class_name} {file_id} -> PrefabInstance {prefab_id}")
 
     def _convert_hierarchy_node(
         self,
