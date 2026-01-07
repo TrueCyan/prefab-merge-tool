@@ -8,7 +8,6 @@ nested prefab loading and script name resolution.
 
 import logging
 import re
-import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -148,18 +147,14 @@ class UnityFileLoader:
         Returns:
             UnityDocument with parsed hierarchy
         """
-        t0 = time.perf_counter()
-
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
-        t1 = time.perf_counter()
-        logger.info(f"[TIMING] YAML load: {(t1-t0)*1000:.1f}ms")
 
         # Find Unity project root
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
         project_root = unity_root or find_unity_project_root(file_path_obj)
 
         if project_root:
-            logger.info(f"Using project root: {project_root}")
+            logger.debug(f"Using project root: {project_root}")
             self._project_root = project_root
             # Use lazy GUID index for fast startup (O(1) init, queries SQLite on-demand)
             if resolve_guids:
@@ -170,9 +165,6 @@ class UnityFileLoader:
             logger.warning(f"Could not find project root for: {file_path_obj}")
             self._project_root = None
             self._guid_index = None
-
-        t2 = time.perf_counter()
-        logger.info(f"[TIMING] Project root + GUID index: {(t2-t1)*1000:.1f}ms")
 
         # Create document
         doc = UnityDocument(file_path=str(file_path))
@@ -187,17 +179,12 @@ class UnityFileLoader:
             project_root=self._project_root,
             load_nested_prefabs=False,
         )
-        t3 = time.perf_counter()
-        logger.info(f"[TIMING] build_hierarchy (no scripts): {(t3-t2)*1000:.1f}ms")
 
         # Load nested prefabs (also without script resolution)
         if load_nested:
-            nested_count = hierarchy.load_all_nested_prefabs()
-            t3b = time.perf_counter()
-            logger.info(f"[TIMING] load_nested_prefabs ({nested_count} prefabs): {(t3b-t3)*1000:.1f}ms")
-            t3 = t3b
+            hierarchy.load_all_nested_prefabs()
 
-        # Batch resolve all script GUIDs first (much faster than individual queries)
+        # Batch resolve all script GUIDs (much faster than individual queries)
         script_guid_map = {}
         if self._guid_index:
             all_guids = set()
@@ -207,10 +194,6 @@ class UnityFileLoader:
                         all_guids.add(comp.script_guid)
             if all_guids:
                 script_guid_map = self._batch_resolve_guids(all_guids)
-                logger.info(f"[TIMING] Batch resolved {len(script_guid_map)}/{len(all_guids)} script GUIDs")
-
-        t3c = time.perf_counter()
-        logger.info(f"[TIMING] Batch GUID resolution: {(t3c-t3)*1000:.1f}ms")
 
         # Convert unityflow hierarchy to our internal model
         for root_node in hierarchy.root_objects:
@@ -219,19 +202,11 @@ class UnityFileLoader:
                 doc.root_objects.append(root_go)
                 self._collect_all_objects(root_go, doc)
 
-        t4 = time.perf_counter()
-        logger.info(f"[TIMING] Convert hierarchy: {(t4-t3c)*1000:.1f}ms")
-
         # Build stripped object -> PrefabInstance mapping for reference resolution
         self._build_stripped_mapping(doc)
 
-        t5 = time.perf_counter()
-        logger.info(f"[TIMING] Build stripped mapping: {(t5-t4)*1000:.1f}ms")
-
         # Sort root objects by name for consistent ordering
         doc.root_objects.sort(key=lambda x: x.name)
-
-        logger.info(f"[TIMING] TOTAL: {(t5-t0)*1000:.1f}ms")
 
         return doc
 
