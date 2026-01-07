@@ -24,6 +24,31 @@ from unityflow import (
     get_prefab_instance_for_stripped,
 )
 
+
+class PathOnlyGUIDIndex:
+    """Wrapper that only allows path resolution, skipping script name resolution.
+
+    This tricks unityflow's build_hierarchy into skipping script resolution
+    (which does N individual SQLite queries) while still allowing nested prefab
+    path resolution (which only needs a few queries).
+    """
+
+    def __init__(self, guid_index: LazyGUIDIndex):
+        self._guid_index = guid_index
+        self.project_root = guid_index.project_root
+
+    def get_path(self, guid: str):
+        """Allow path resolution for nested prefab loading."""
+        return self._guid_index.get_path(guid)
+
+    def resolve_name(self, guid: str):
+        """Skip script name resolution - return None to force unityflow to skip."""
+        return None
+
+    def resolve_path(self, guid: str):
+        """Allow path resolution."""
+        return self._guid_index.resolve_path(guid)
+
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
     UnityGameObject,
@@ -154,15 +179,16 @@ class UnityFileLoader:
         doc.project_root = str(project_root) if project_root else None
 
         # Build hierarchy WITHOUT script resolution for fast loading
-        # But pass guid_index so nested prefab loading can resolve paths
+        # Use PathOnlyGUIDIndex wrapper to allow path resolution but skip script resolution
+        path_only_index = PathOnlyGUIDIndex(self._guid_index) if self._guid_index else None
         hierarchy = build_hierarchy(
             self._raw_doc,
-            guid_index=self._guid_index,  # Needed for nested prefab path resolution
+            guid_index=path_only_index,  # Path resolution only, no script resolution
             project_root=self._project_root,
             load_nested_prefabs=False,
         )
         t3 = time.perf_counter()
-        logger.info(f"[TIMING] build_hierarchy: {(t3-t2)*1000:.1f}ms")
+        logger.info(f"[TIMING] build_hierarchy (no scripts): {(t3-t2)*1000:.1f}ms")
 
         # Load nested prefabs (also without script resolution)
         if load_nested:
