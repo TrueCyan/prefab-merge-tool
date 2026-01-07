@@ -101,14 +101,31 @@ class UnityFileLoader:
 
     def _get_entry_data(self, entry: Any) -> dict:
         """Get the data dictionary from a UnityYAMLObject."""
-        if hasattr(entry, "get_content"):
-            return entry.get_content() or {}
+        try:
+            if hasattr(entry, "get_content"):
+                content = entry.get_content()
+                if isinstance(content, dict):
+                    return content
+                # get_content() may fail or return non-dict for some entries
+                return {}
+        except (AttributeError, TypeError):
+            # Fall through to try entry.data directly
+            pass
+
         if hasattr(entry, "data"):
-            # data is like {"GameObject": {...}} - get the inner dict
-            data = entry.data or {}
-            if data and len(data) == 1:
-                return next(iter(data.values()), {})
-            return data
+            data = entry.data
+            if data is None:
+                return {}
+            # data should be like {"GameObject": {...}} - get the inner dict
+            if isinstance(data, dict) and len(data) == 1:
+                inner = next(iter(data.values()), {})
+                if isinstance(inner, dict):
+                    return inner
+                return {}
+            if isinstance(data, dict):
+                return data
+            # data is a list or other type - cannot extract as dict
+            return {}
         return {}
 
     def load(
