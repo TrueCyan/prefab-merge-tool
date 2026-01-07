@@ -51,35 +51,16 @@ def build_guid_index(project_root: Path, include_packages: bool = True) -> GUIDI
 
 ---
 
-## 2. [낮음] CLASS_IDS 매핑 오류 수정
-
-### 현재 상태
-
-`unityflow.parser.CLASS_IDS`에 일부 오류 발견:
-
-| Class ID | unityflow 값 | 실제 값 |
-|----------|--------------|---------|
-| 58 | CircleCollider2D | HingeJoint2D |
-| 59 | HingeJoint | SpringJoint2D |
-| 60 | PolygonCollider2D | DistanceJoint2D |
-| 61 | BoxCollider2D | SliderJoint2D |
-| ... | ... | ... |
+## 2. [낮음] CLASS_IDS 검토 및 확장
 
 ### 참조
 
 Unity 공식 Class ID Reference:
 https://docs.unity3d.com/Manual/ClassIDReference.html
 
-### 우선순위: 낮음
+(또는 실제 Unity 프로젝트의 YAML 파일에서 `--- !u!{class_id}` 패턴으로 확인)
 
-- prefab-merge-tool에서 `ADDITIONAL_CLASS_IDS`로 보완 중
-- 표시 문제일 뿐 기능에는 영향 없음
-
----
-
-## 3. [낮음] 누락된 Class ID 추가
-
-### 현재 누락 목록
+### 현재 누락 목록 (prefab-merge-tool 기준)
 
 ```python
 {
@@ -112,8 +93,7 @@ https://docs.unity3d.com/Manual/ClassIDReference.html
 | 항목 | 우선순위 | 상태 | 비고 |
 |------|----------|------|------|
 | Library/PackageCache 스캔 | 중간 | 미구현 | 장기적 유지보수 필요 |
-| CLASS_IDS 오류 수정 | 낮음 | 미구현 | 표시 문제만 |
-| 누락 Class ID 추가 | 낮음 | 미구현 | prefab-merge-tool에서 보완 중 |
+| CLASS_IDS 검토 및 확장 | 낮음 | 미구현 | Unity 공식 문서 참조 필요 |
 
 ---
 
