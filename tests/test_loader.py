@@ -22,6 +22,8 @@ class MockComponentInfo:
     class_name: str
     data: dict
     is_on_stripped_object: bool = False
+    script_guid: str = None
+    script_name: str = None
 
 
 @dataclass
@@ -40,7 +42,10 @@ class MockHierarchyNode:
     is_stripped: bool = False
     prefab_instance_id: int = 0
     modifications: list = None
+    is_from_nested_prefab: bool = False
+    nested_prefab_loaded: bool = False
     _document: Any = None
+    _hierarchy: Any = None
 
     def __post_init__(self):
         if self.children is None:
@@ -65,14 +70,16 @@ class TestUnityFileLoader:
         loader = UnityFileLoader()
         assert loader._raw_doc is None
 
+    @patch("prefab_diff_tool.core.loader.find_unity_project_root")
     @patch("prefab_diff_tool.core.loader.build_hierarchy")
     @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
-    def test_load_empty_document(self, mock_doc_class, mock_build_hierarchy):
+    def test_load_empty_document(self, mock_doc_class, mock_build_hierarchy, mock_find_root):
         """Test loading a document with no entries."""
         mock_doc = MagicMock()
         mock_doc.objects = []
         mock_doc_class.load.return_value = mock_doc
         mock_build_hierarchy.return_value = MockHierarchy([])
+        mock_find_root.return_value = None
 
         loader = UnityFileLoader()
         doc = loader.load(Path("/fake/path.prefab"))
@@ -82,13 +89,15 @@ class TestUnityFileLoader:
         assert doc.root_objects == []
         assert doc.object_count == 0
 
+    @patch("prefab_diff_tool.core.loader.find_unity_project_root")
     @patch("prefab_diff_tool.core.loader.build_hierarchy")
     @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
-    def test_load_single_gameobject(self, mock_doc_class, mock_build_hierarchy):
+    def test_load_single_gameobject(self, mock_doc_class, mock_build_hierarchy, mock_find_root):
         """Test loading a document with a single GameObject."""
         mock_doc = MagicMock()
         mock_doc.objects = []
         mock_doc_class.load.return_value = mock_doc
+        mock_find_root.return_value = None
 
         # Create mock hierarchy node
         root_node = MockHierarchyNode(
@@ -105,13 +114,15 @@ class TestUnityFileLoader:
         assert "12345" in doc.all_objects
         assert doc.all_objects["12345"].name == "TestObject"
 
+    @patch("prefab_diff_tool.core.loader.find_unity_project_root")
     @patch("prefab_diff_tool.core.loader.build_hierarchy")
     @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
-    def test_load_gameobject_with_component(self, mock_doc_class, mock_build_hierarchy):
+    def test_load_gameobject_with_component(self, mock_doc_class, mock_build_hierarchy, mock_find_root):
         """Test loading a GameObject with a Transform component."""
         mock_doc = MagicMock()
         mock_doc.objects = []
         mock_doc_class.load.return_value = mock_doc
+        mock_find_root.return_value = None
 
         # Create mock component and node
         transform_comp = MockComponentInfo(
@@ -142,14 +153,16 @@ class TestUnityFileLoader:
 class TestLoadUnityFileFunction:
     """Tests for the convenience function."""
 
+    @patch("prefab_diff_tool.core.loader.find_unity_project_root")
     @patch("prefab_diff_tool.core.loader.build_hierarchy")
     @patch("prefab_diff_tool.core.loader.UnityYAMLDocument")
-    def test_load_unity_file_returns_document(self, mock_doc_class, mock_build_hierarchy):
+    def test_load_unity_file_returns_document(self, mock_doc_class, mock_build_hierarchy, mock_find_root):
         """Test that load_unity_file returns a UnityDocument."""
         mock_doc = MagicMock()
         mock_doc.objects = []
         mock_doc_class.load.return_value = mock_doc
         mock_build_hierarchy.return_value = MockHierarchy([])
+        mock_find_root.return_value = None
 
         result = load_unity_file(Path("/test.prefab"))
 
