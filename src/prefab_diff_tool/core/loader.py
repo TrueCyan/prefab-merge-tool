@@ -336,11 +336,21 @@ class UnityFileLoader:
             logger.debug(f"Source prefab not found: {source_path}")
             return
 
+        # Check for circular reference
+        source_path_str = str(source_path)
+        if source_path_str in self._loading_prefabs:
+            logger.debug(f"Circular reference detected, skipping: {source_path_str}")
+            return
+
         logger.debug(f"Loading nested prefab contents: {source_path}")
 
         try:
-            # Load the source prefab (with nested loading to get full hierarchy)
-            nested_doc = self.load(source_path, self._project_root, load_nested=True)
+            # Use a NEW loader instance to avoid corrupting current loader's state
+            # This is critical - using self.load() would overwrite _entries_by_id,
+            # _stripped_transforms, etc. and break the hierarchy of the parent prefab
+            nested_loader = UnityFileLoader()
+            nested_loader._loading_prefabs = self._loading_prefabs  # Share circular ref tracking
+            nested_doc = nested_loader.load(source_path, self._project_root, load_nested=True)
 
             # Get the first root object (main prefab root)
             if nested_doc.root_objects:
