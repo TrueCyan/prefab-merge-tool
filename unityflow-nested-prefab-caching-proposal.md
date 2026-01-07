@@ -1,6 +1,56 @@
-# Feature Request: Cache Loaded Nested Prefabs
+# Feature Request: Performance Improvements
 
-## 문제
+## 문제 1: GUIDIndex가 전체 인덱스를 메모리에 로드
+
+### 현재 구현
+
+```python
+@dataclass
+class GUIDIndex:
+    guid_to_path: dict[str, Path] = field(default_factory=dict)  # 전부 메모리
+    path_to_guid: dict[Path, str] = field(default_factory=dict)  # 전부 메모리
+```
+
+`get_cached_guid_index()` 호출 시 SQLite에서 **모든 엔트리**를 메모리로 로드합니다.
+170k 에셋 프로젝트 → 340k dict 엔트리 → 느린 초기 로딩
+
+### 제안: Lazy SQLite Query
+
+```python
+@dataclass
+class LazyGUIDIndex:
+    """SQLite를 직접 쿼리하는 lazy GUIDIndex."""
+    _db_path: Path
+    _conn: sqlite3.Connection | None = None
+    _cache: dict[str, Path] = field(default_factory=dict)  # LRU 캐시 (선택적)
+
+    def get_path(self, guid: str) -> Path | None:
+        # 먼저 캐시 확인
+        if guid in self._cache:
+            return self._cache[guid]
+
+        # DB 직접 쿼리
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT path FROM guid_cache WHERE guid = ?", (guid,)
+        )
+        row = cursor.fetchone()
+        if row:
+            path = Path(row[0])
+            self._cache[guid] = path  # 캐시에 저장
+            return path
+        return None
+```
+
+### 기대 효과
+
+- 초기 로딩: O(N) → O(1)
+- 메모리 사용: 전체 인덱스 → 필요한 것만
+- SQLite 인덱스로 O(log N) 조회 (충분히 빠름)
+
+---
+
+## 문제 2: Nested Prefab 캐싱 없음
 
 `load_source_prefab()` 호출 시 같은 소스 프리팹이 여러 번 사용되어도 매번 새로 로드합니다:
 
