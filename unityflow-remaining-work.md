@@ -58,7 +58,9 @@ def build_guid_index(project_root: Path, include_packages: bool = True) -> GUIDI
 Unity 공식 Class ID Reference:
 https://docs.unity3d.com/6000.3/Documentation/Manual/ClassIDReference.html
 
-### unityflow에 누락된 ID (Unity 6.3 LTS 기준)
+(sample/ClassIDReference.html 에 Unity 6.3 LTS 문서 저장됨)
+
+### 추가 필요한 ID (Unity 6.3 LTS 기준)
 
 ```python
 {
@@ -74,14 +76,11 @@ https://docs.unity3d.com/6000.3/Documentation/Manual/ClassIDReference.html
 }
 ```
 
-### 참고: unityflow CLASS_IDS 오류
+### 수정 필요
 
-ID 156이 `TerrainCollider`로 되어있지만 공식 문서에는 `TerrainData`
+ID 156: 현재 `TerrainCollider` → 공식 문서 `TerrainData`
 
 ### 우선순위: 낮음
-
-- prefab-merge-tool에서 `ADDITIONAL_CLASS_IDS`로 보완 중
-- unityflow에 추가하면 다른 사용자도 혜택
 
 ---
 
@@ -92,26 +91,3 @@ ID 156이 `TerrainCollider`로 되어있지만 공식 문서에는 `TerrainData`
 | Library/PackageCache 스캔 | 중간 | 미구현 | 장기적 유지보수 필요 |
 | CLASS_IDS 검토 및 확장 | 낮음 | 미구현 | Unity 공식 문서 참조 필요 |
 
----
-
-## 참고: 현재 workaround (prefab-merge-tool)
-
-```python
-# loader.py
-ADDITIONAL_CLASS_IDS = {
-    50: "Rigidbody2D",
-    # ... 누락된 ID 보완
-    1101: "PrefabInstance",
-    1102: "PrefabModification",
-}
-
-def resolve_class_name(class_name: str) -> str:
-    """Unknown(ID) 형식을 실제 이름으로 변환"""
-    match = UNKNOWN_PATTERN.match(class_name)
-    if match:
-        class_id = int(match.group(1))
-        return ADDITIONAL_CLASS_IDS.get(class_id, class_name)
-    return class_name
-```
-
-이 workaround는 unityflow가 업데이트되면 제거 가능.

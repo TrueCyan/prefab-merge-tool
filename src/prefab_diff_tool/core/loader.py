@@ -34,21 +34,6 @@ from prefab_diff_tool.core.unity_model import (
 # Set up logging
 logger = logging.getLogger(__name__)
 
-
-# Additional Unity class IDs not in unityflow's CLASS_IDS
-# Reference: https://docs.unity3d.com/6000.3/Documentation/Manual/ClassIDReference.html
-_ADDITIONAL_CLASS_IDS = {
-    50: "Rigidbody2D",
-    55: "PhysicsManager",
-    150: "PreloadData",
-    319: "AvatarMask",
-    320: "PlayableDirector",
-    328: "VideoPlayer",
-    329: "VideoClip",
-    331: "SpriteMask",
-    363: "OcclusionCullingData",
-}
-
 # Pattern to match "Unknown(ID)" format
 _UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
 
@@ -56,13 +41,12 @@ _UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
 def resolve_class_name(class_name: str) -> str:
     """Resolve class name, handling Unknown(ID) format.
 
-    Uses unityflow's CLASS_IDS first, then falls back to additional IDs.
+    Uses unityflow's CLASS_IDS for resolution.
     """
     match = _UNKNOWN_PATTERN.match(class_name)
     if match:
         class_id = int(match.group(1))
-        # Try unityflow's mapping first, then our additions
-        return CLASS_IDS.get(class_id) or _ADDITIONAL_CLASS_IDS.get(class_id, class_name)
+        return CLASS_IDS.get(class_id, class_name)
     return class_name
 
 
