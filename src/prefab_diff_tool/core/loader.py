@@ -95,6 +95,7 @@ class UnityFileLoader:
         self._prefab_instances: dict[str, Any] = {}  # fileID -> PrefabInstance entry
         self._stripped_transforms: dict[str, str] = {}  # Transform fileID -> PrefabInstance fileID
         self._stripped_game_objects: dict[str, str] = {}  # GO fileID -> PrefabInstance fileID
+        self._stripped_components: dict[str, str] = {}  # Component fileID -> PrefabInstance fileID
         # Track loading prefabs to prevent circular references
         self._loading_prefabs: set[str] = set()
         # Project root for nested prefab loading
@@ -186,6 +187,7 @@ class UnityFileLoader:
         self._prefab_instances.clear()
         self._stripped_transforms.clear()
         self._stripped_game_objects.clear()
+        self._stripped_components.clear()
 
         # Extract all GameObjects and Components
         game_objects: dict[str, UnityGameObject] = {}
@@ -221,6 +223,19 @@ class UnityFileLoader:
                         self._stripped_game_objects[file_id] = prefab_id
                         logger.debug(
                             f"Mapped stripped GameObject {file_id} -> PrefabInstance {prefab_id}"
+                        )
+
+            # Collect stripped component references (MonoBehaviour, etc.)
+            # These have m_PrefabInstance but may have m_GameObject: {fileID: 0}
+            if is_stripped and class_name not in ("GameObject", "Transform", "RectTransform", "PrefabInstance"):
+                data = self._get_entry_data(entry)
+                prefab_ref = data.get("m_PrefabInstance")
+                if prefab_ref and isinstance(prefab_ref, dict):
+                    prefab_id = str(prefab_ref.get("fileID", ""))
+                    if prefab_id:
+                        self._stripped_components[file_id] = prefab_id
+                        logger.debug(
+                            f"Mapped stripped {class_name} {file_id} -> PrefabInstance {prefab_id}"
                         )
 
         # Second pass: parse GameObjects and Components
@@ -555,6 +570,7 @@ class UnityFileLoader:
             # Find the GameObject this component belongs to
             data = self._get_entry_data(entry)
             go_ref = data.get("m_GameObject")
+            go_id = ""
             if go_ref and isinstance(go_ref, dict):
                 go_id = str(go_ref.get("fileID", ""))
                 # Redirect stripped GO references to their PrefabInstance
@@ -565,8 +581,17 @@ class UnityFileLoader:
                         f"to PrefabInstance {prefab_id}"
                     )
                     go_id = prefab_id
-                if go_id in game_objects:
-                    game_objects[go_id].components.append(comp)
+
+            # For stripped components with m_GameObject: {fileID: 0}, use m_PrefabInstance
+            if (not go_id or go_id == "0") and comp_id in self._stripped_components:
+                go_id = self._stripped_components[comp_id]
+                logger.debug(
+                    f"Stripped component {comp.type_name} {comp_id} attached to "
+                    f"PrefabInstance {go_id}"
+                )
+
+            if go_id and go_id in game_objects:
+                game_objects[go_id].components.append(comp)
 
         # Build Transform ID -> GameObject index for O(1) lookup
         # This avoids O(n²) complexity when building hierarchy
