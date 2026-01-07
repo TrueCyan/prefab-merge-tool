@@ -154,15 +154,15 @@ class UnityFileLoader:
         doc.project_root = str(project_root) if project_root else None
 
         # Build hierarchy WITHOUT script resolution for fast loading
-        # Script names are resolved lazily when accessed
+        # But pass guid_index so nested prefab loading can resolve paths
         hierarchy = build_hierarchy(
             self._raw_doc,
-            guid_index=None,  # Skip script resolution during build (expensive)
+            guid_index=self._guid_index,  # Needed for nested prefab path resolution
             project_root=self._project_root,
             load_nested_prefabs=False,
         )
         t3 = time.perf_counter()
-        logger.info(f"[TIMING] build_hierarchy (no scripts): {(t3-t2)*1000:.1f}ms")
+        logger.info(f"[TIMING] build_hierarchy: {(t3-t2)*1000:.1f}ms")
 
         # Load nested prefabs (also without script resolution)
         if load_nested:
