@@ -6,6 +6,7 @@ Uses unityflow's build_hierarchy() for hierarchy parsing, including
 nested prefab loading and script name resolution.
 """
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -163,6 +164,7 @@ class UnityFileLoader:
 
         For PrefabInstance nodes with loaded nested content, merges the
         PrefabInstance with its nested root to avoid duplicate display.
+        Applies m_Modifications from the PrefabInstance to override field values.
 
         Args:
             node: The unityflow HierarchyNode to convert
@@ -174,12 +176,23 @@ class UnityFileLoader:
         # Check if this is a PrefabInstance with loaded nested content
         # In this case, merge with the nested root to avoid duplicate display
         nested_root = None
+        modifications_by_target: dict[int, list[dict]] = {}
+
         if node.is_prefab_instance and node.nested_prefab_loaded and node.children:
             # Find the nested prefab's root (first child that is_from_nested_prefab)
             for child in node.children:
                 if child.is_from_nested_prefab:
                     nested_root = child
                     break
+
+            # Group modifications by target fileID for efficient lookup
+            for mod in node.modifications:
+                target = mod.get("target", {})
+                target_file_id = target.get("fileID", 0)
+                if target_file_id:
+                    if target_file_id not in modifications_by_target:
+                        modifications_by_target[target_file_id] = []
+                    modifications_by_target[target_file_id].append(mod)
 
         # Create UnityGameObject from HierarchyNode
         go = UnityGameObject(
@@ -210,14 +223,19 @@ class UnityFileLoader:
         if nested_root:
             for comp_info in nested_root.components:
                 key = comp_info.script_name or comp_info.class_name
-                comp = self._convert_component_info(components_by_type[key])
+                final_comp_info = components_by_type[key]
+                # Apply modifications targeting this component
+                mods = modifications_by_target.get(final_comp_info.file_id, [])
+                comp = self._convert_component_info(final_comp_info, mods)
                 go.components.append(comp)
                 seen_keys.add(key)
 
         for comp_info in node.components:
             key = comp_info.script_name or comp_info.class_name
             if key not in seen_keys:
-                comp = self._convert_component_info(comp_info)
+                # Apply modifications for PrefabInstance's own components
+                mods = modifications_by_target.get(comp_info.file_id, [])
+                comp = self._convert_component_info(comp_info, mods)
                 go.components.append(comp)
                 seen_keys.add(key)
 
@@ -240,11 +258,13 @@ class UnityFileLoader:
     def _convert_component_info(
         self,
         comp_info: ComponentInfo,
+        modifications: Optional[list[dict]] = None,
     ) -> UnityComponent:
         """Convert a unityflow ComponentInfo to our UnityComponent.
 
         Args:
             comp_info: The unityflow ComponentInfo to convert
+            modifications: Optional list of m_Modifications targeting this component
 
         Returns:
             Converted UnityComponent
@@ -259,10 +279,124 @@ class UnityFileLoader:
         comp.script_guid = comp_info.script_guid
         comp.script_name = comp_info.script_name
 
+        # Apply modifications to component data before extracting properties
+        data = comp_info.data
+        if modifications:
+            # Deep copy to avoid modifying the original data
+            data = self._apply_modifications(copy.deepcopy(data), modifications)
+
         # Extract all properties
-        comp.properties = self._extract_properties(comp_info.data)
+        comp.properties = self._extract_properties(data)
 
         return comp
+
+    def _apply_modifications(
+        self,
+        data: dict,
+        modifications: list[dict],
+    ) -> dict:
+        """Apply PrefabInstance modifications to component data.
+
+        Each modification has:
+        - propertyPath: path like "m_LocalPosition.x" or "m_Materials.Array.data[0]"
+        - value: the new value (for simple types)
+        - objectReference: reference value (for object references)
+
+        Args:
+            data: Component data dictionary (will be modified in place)
+            modifications: List of modifications targeting this component
+
+        Returns:
+            Modified data dictionary
+        """
+        for mod in modifications:
+            property_path = mod.get("propertyPath", "")
+            value = mod.get("value")
+            obj_ref = mod.get("objectReference", {})
+
+            if not property_path:
+                continue
+
+            # Parse property path and apply value
+            self._set_nested_value(data, property_path, value, obj_ref)
+
+        return data
+
+    def _set_nested_value(
+        self,
+        data: dict,
+        property_path: str,
+        value: Any,
+        obj_ref: dict,
+    ) -> None:
+        """Set a nested value in a dictionary using Unity property path.
+
+        Handles paths like:
+        - "m_LocalPosition.x"
+        - "m_Materials.Array.data[0]"
+        - "m_Name"
+
+        Args:
+            data: Dictionary to modify
+            property_path: Unity property path
+            value: Value to set (for simple types)
+            obj_ref: Object reference (for reference types)
+        """
+        # Unity property paths use "." for nesting and ".Array.data[N]" for arrays
+        parts = property_path.split(".")
+        current = data
+
+        for i, part in enumerate(parts[:-1]):
+            # Handle array access like "Array" followed by "data[0]"
+            if part == "Array":
+                continue  # Skip "Array", next part will be "data[N]"
+
+            # Handle "data[N]" pattern
+            if part.startswith("data["):
+                idx_str = part[5:-1]  # Extract N from "data[N]"
+                try:
+                    idx = int(idx_str)
+                    if isinstance(current, list) and 0 <= idx < len(current):
+                        current = current[idx]
+                    else:
+                        return  # Index out of range
+                except (ValueError, TypeError):
+                    return
+                continue
+
+            # Regular nested key
+            if isinstance(current, dict):
+                if part not in current:
+                    current[part] = {}
+                current = current[part]
+            else:
+                return  # Cannot traverse further
+
+        # Set the final value
+        final_key = parts[-1]
+
+        # Handle final array index
+        if final_key.startswith("data["):
+            idx_str = final_key[5:-1]
+            try:
+                idx = int(idx_str)
+                if isinstance(current, list) and 0 <= idx < len(current):
+                    # Use object reference if fileID is non-zero, otherwise use value
+                    if obj_ref and obj_ref.get("fileID", 0) != 0:
+                        current[idx] = obj_ref
+                    else:
+                        current[idx] = value
+            except (ValueError, TypeError):
+                pass
+            return
+
+        # Regular final key
+        if isinstance(current, dict):
+            # Use object reference if fileID is non-zero, otherwise use value
+            if obj_ref and obj_ref.get("fileID", 0) != 0:
+                current[final_key] = obj_ref
+            else:
+                current[final_key] = value
 
     def _collect_all_objects(self, go: UnityGameObject, doc: UnityDocument) -> None:
         """Recursively collect all GameObjects and Components into doc's lookup dicts."""
