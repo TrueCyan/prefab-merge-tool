@@ -8,6 +8,7 @@ nested prefab loading and script name resolution.
 
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -122,7 +123,11 @@ class UnityFileLoader:
         Returns:
             UnityDocument with parsed hierarchy
         """
+        t0 = time.perf_counter()
+
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
+        t1 = time.perf_counter()
+        logger.info(f"[TIMING] YAML load: {(t1-t0)*1000:.1f}ms")
 
         # Find Unity project root
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
@@ -141,6 +146,9 @@ class UnityFileLoader:
             self._project_root = None
             self._guid_index = None
 
+        t2 = time.perf_counter()
+        logger.info(f"[TIMING] Project root + GUID index: {(t2-t1)*1000:.1f}ms")
+
         # Create document
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
@@ -152,6 +160,8 @@ class UnityFileLoader:
             project_root=self._project_root,
             load_nested_prefabs=load_nested,
         )
+        t3 = time.perf_counter()
+        logger.info(f"[TIMING] build_hierarchy: {(t3-t2)*1000:.1f}ms")
 
         # Convert unityflow hierarchy to our internal model
         for root_node in hierarchy.root_objects:
@@ -160,11 +170,19 @@ class UnityFileLoader:
                 doc.root_objects.append(root_go)
                 self._collect_all_objects(root_go, doc)
 
+        t4 = time.perf_counter()
+        logger.info(f"[TIMING] Convert hierarchy: {(t4-t3)*1000:.1f}ms")
+
         # Build stripped object -> PrefabInstance mapping for reference resolution
         self._build_stripped_mapping(doc)
 
+        t5 = time.perf_counter()
+        logger.info(f"[TIMING] Build stripped mapping: {(t5-t4)*1000:.1f}ms")
+
         # Sort root objects by name for consistent ordering
         doc.root_objects.sort(key=lambda x: x.name)
+
+        logger.info(f"[TIMING] TOTAL: {(t5-t0)*1000:.1f}ms")
 
         return doc
 
