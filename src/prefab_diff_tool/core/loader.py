@@ -284,9 +284,13 @@ class UnityFileLoader:
         if source_ref and isinstance(source_ref, dict):
             source_guid = source_ref.get("guid")
 
-        # Try to resolve prefab name from GUID
-        prefab_name = None
-        if source_guid:
+        # Check for name override in m_Modifications
+        # Unity stores renamed instances like: propertyPath: m_Name, value: "NewName"
+        override_name = self._get_prefab_instance_name_override(data)
+
+        # Try to resolve prefab name from GUID as fallback
+        prefab_name = override_name
+        if not prefab_name and source_guid:
             prefab_name = self._guid_resolver.resolve(source_guid)
 
         # Fallback name if resolution fails
@@ -306,12 +310,36 @@ class UnityFileLoader:
 
         # Load source prefab contents if requested
         if load_nested and source_guid and self._project_root:
-            self._load_nested_prefab_contents(virtual_go, source_guid)
+            self._load_nested_prefab_contents(virtual_go, source_guid, data)
 
         return virtual_go
 
+    def _get_prefab_instance_name_override(self, data: dict) -> Optional[str]:
+        """Extract name override from PrefabInstance's m_Modifications.
+
+        Args:
+            data: The PrefabInstance data dictionary
+
+        Returns:
+            The overridden name if found, None otherwise
+        """
+        modification = data.get("m_Modification", {})
+        modifications = modification.get("m_Modifications", [])
+
+        for mod in modifications:
+            if not isinstance(mod, dict):
+                continue
+            # Look for m_Name property change on the root object
+            if mod.get("propertyPath") == "m_Name":
+                value = mod.get("value")
+                if value and isinstance(value, str):
+                    logger.debug(f"Found name override in m_Modifications: {value}")
+                    return value
+
+        return None
+
     def _load_nested_prefab_contents(
-        self, virtual_go: UnityGameObject, source_guid: str
+        self, virtual_go: UnityGameObject, source_guid: str, prefab_data: dict
     ) -> None:
         """Load the contents of a nested prefab and add as children.
 
@@ -321,11 +349,15 @@ class UnityFileLoader:
         Args:
             virtual_go: The virtual GameObject representing the PrefabInstance
             source_guid: GUID of the source prefab to load
+            prefab_data: The PrefabInstance data (for checking name overrides)
         """
         # Resolve GUID to file path
         source_path = self._guid_resolver.resolve_path(source_guid)
         if not source_path:
-            logger.debug(f"Could not resolve path for prefab GUID: {source_guid[:8]}...")
+            logger.warning(
+                f"Could not resolve path for prefab GUID: {source_guid} "
+                f"(name: {virtual_go.name})"
+            )
             return
 
         # Make path absolute if needed
@@ -333,7 +365,7 @@ class UnityFileLoader:
             source_path = self._project_root / source_path
 
         if not source_path.exists():
-            logger.debug(f"Source prefab not found: {source_path}")
+            logger.warning(f"Source prefab not found: {source_path}")
             return
 
         # Check for circular reference
@@ -356,8 +388,10 @@ class UnityFileLoader:
             if nested_doc.root_objects:
                 root_obj = nested_doc.root_objects[0]
 
-                # Use the root object's name instead of file name
-                virtual_go.name = root_obj.name
+                # Check if there's a name override - if not, use root object's name
+                override_name = self._get_prefab_instance_name_override(prefab_data)
+                if not override_name:
+                    virtual_go.name = root_obj.name
 
                 # Copy root's children directly to virtual_go (skip the root level)
                 for child in root_obj.children:
@@ -370,8 +404,10 @@ class UnityFileLoader:
                 logger.debug(
                     f"Loaded nested prefab '{virtual_go.name}' with {len(virtual_go.children)} children"
                 )
+            else:
+                logger.warning(f"No root objects found in prefab: {source_path}")
         except Exception as e:
-            logger.warning(f"Failed to load nested prefab {source_path}: {e}")
+            logger.warning(f"Failed to load nested prefab {source_path}: {e}", exc_info=True)
 
     def _clone_game_object(
         self, source: UnityGameObject, new_parent: Optional[UnityGameObject]
