@@ -100,58 +100,11 @@ class UnityFileLoader:
         self._project_root: Optional[Path] = None
 
     def _get_entry_data(self, entry: Any) -> dict:
-        """Get the data dictionary from a UnityYAMLObject.
-
-        Note: In rare cases, Unity YAML documents may have non-dict root data.
-        This can happen when:
-        - The document content is a bare list/sequence
-        - The YAML parser encounters edge cases
-        This is a known issue in unityflow's fast_parser that should be fixed there.
-        """
-        file_id = getattr(entry, "file_id", "unknown")
-        class_name = getattr(entry, "class_name", "unknown")
-
-        try:
-            if hasattr(entry, "get_content"):
-                content = entry.get_content()
-                if isinstance(content, dict):
-                    return content
-                # get_content() may fail or return non-dict for some entries
-                if content is not None:
-                    logger.debug(
-                        f"Entry {file_id} ({class_name}): get_content() returned "
-                        f"{type(content).__name__}, expected dict"
-                    )
-                return {}
-        except (AttributeError, TypeError) as e:
-            logger.debug(f"Entry {file_id} ({class_name}): get_content() failed: {e}")
-            # Fall through to try entry.data directly
-
-        if hasattr(entry, "data"):
-            data = entry.data
-            if data is None:
-                return {}
-
-            # Handle case where data is not a dict (unityflow bug)
-            if not isinstance(data, dict):
-                logger.warning(
-                    f"Entry {file_id} ({class_name}): data is {type(data).__name__}, "
-                    f"expected dict. Content: {str(data)[:200]}... "
-                    f"This is a unityflow parser issue."
-                )
-                # If it's a list with a single dict, try to use that
-                if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
-                    logger.debug(f"Entry {file_id}: Extracting single dict from list")
-                    return data[0]
-                return {}
-
-            # data should be like {"GameObject": {...}} - get the inner dict
-            if len(data) == 1:
-                inner = next(iter(data.values()), {})
-                if isinstance(inner, dict):
-                    return inner
-                return {}
-            return data
+        """Get the data dictionary from a UnityYAMLObject."""
+        if hasattr(entry, "get_content"):
+            content = entry.get_content()
+            if isinstance(content, dict):
+                return content
         return {}
 
     def load(
