@@ -565,6 +565,7 @@ class UnityFileLoader:
         for comp_id, comp in components.items():
             entry = self._entries_by_id.get(comp_id)
             if not entry:
+                logger.warning(f"Component {comp_id} ({comp.type_name}) not found in _entries_by_id")
                 continue
 
             # Find the GameObject this component belongs to
@@ -592,6 +593,15 @@ class UnityFileLoader:
 
             if go_id and go_id in game_objects:
                 game_objects[go_id].components.append(comp)
+            elif go_id:
+                logger.warning(
+                    f"Component {comp_id} ({comp.type_name}) has m_GameObject {go_id} "
+                    f"but GO not found in game_objects"
+                )
+            else:
+                logger.warning(
+                    f"Component {comp_id} ({comp.type_name}) has no valid m_GameObject reference"
+                )
 
         # Build Transform ID -> GameObject index for O(1) lookup
         # This avoids O(n²) complexity when building hierarchy
