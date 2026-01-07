@@ -171,15 +171,30 @@ class UnityFileLoader:
             logger.info(f"[TIMING] load_nested_prefabs ({nested_count} prefabs): {(t3b-t3)*1000:.1f}ms")
             t3 = t3b
 
+        # Batch resolve all script GUIDs first (much faster than individual queries)
+        script_guid_map = {}
+        if self._guid_index:
+            all_guids = set()
+            for node in hierarchy.iter_all():
+                for comp in node.components:
+                    if comp.script_guid:
+                        all_guids.add(comp.script_guid)
+            if all_guids:
+                script_guid_map = self._batch_resolve_guids(all_guids)
+                logger.info(f"[TIMING] Batch resolved {len(script_guid_map)}/{len(all_guids)} script GUIDs")
+
+        t3c = time.perf_counter()
+        logger.info(f"[TIMING] Batch GUID resolution: {(t3c-t3)*1000:.1f}ms")
+
         # Convert unityflow hierarchy to our internal model
         for root_node in hierarchy.root_objects:
-            root_go = self._convert_hierarchy_node(root_node, None)
+            root_go = self._convert_hierarchy_node(root_node, None, script_guid_map)
             if root_go:
                 doc.root_objects.append(root_go)
                 self._collect_all_objects(root_go, doc)
 
         t4 = time.perf_counter()
-        logger.info(f"[TIMING] Convert hierarchy: {(t4-t3)*1000:.1f}ms")
+        logger.info(f"[TIMING] Convert hierarchy: {(t4-t3c)*1000:.1f}ms")
 
         # Build stripped object -> PrefabInstance mapping for reference resolution
         self._build_stripped_mapping(doc)
@@ -220,16 +235,57 @@ class UnityFileLoader:
                 doc.stripped_to_prefab[file_id] = (str(prefab_id), class_name)
                 logger.debug(f"Mapped stripped {class_name} {file_id} -> PrefabInstance {prefab_id}")
 
+    def _batch_resolve_guids(self, guids: set[str]) -> dict[str, str]:
+        """Batch resolve GUIDs to script names using a single SQL query.
+
+        Args:
+            guids: Set of GUIDs to resolve
+
+        Returns:
+            Dict mapping GUID -> script name
+        """
+        if not self._guid_index or not guids:
+            return {}
+
+        import sqlite3
+        from unityflow.asset_tracker import CACHE_DIR_NAME, CACHE_DB_NAME
+
+        db_path = self._project_root / CACHE_DIR_NAME / CACHE_DB_NAME
+        if not db_path.exists():
+            return {}
+
+        result = {}
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=30.0)
+            # Use WHERE IN for batch query
+            placeholders = ",".join("?" * len(guids))
+            cursor = conn.execute(
+                f"SELECT guid, path FROM guid_cache WHERE guid IN ({placeholders})",
+                list(guids),
+            )
+            for row in cursor:
+                guid, path = row
+                # Extract script name from path (stem)
+                from pathlib import Path
+                result[guid] = Path(path).stem
+            conn.close()
+        except sqlite3.Error as e:
+            logger.warning(f"Batch GUID resolution failed: {e}")
+
+        return result
+
     def _convert_hierarchy_node(
         self,
         node: HierarchyNode,
         parent: Optional[UnityGameObject],
+        script_guid_map: Optional[dict[str, str]] = None,
     ) -> Optional[UnityGameObject]:
         """Convert a unityflow HierarchyNode to our UnityGameObject.
 
         Args:
             node: The unityflow HierarchyNode to convert
             parent: The parent UnityGameObject (or None for root)
+            script_guid_map: Pre-resolved GUID -> script name mapping
 
         Returns:
             Converted UnityGameObject
@@ -246,22 +302,27 @@ class UnityFileLoader:
 
         # Convert components
         for comp_info in node.components:
-            comp = self._convert_component_info(comp_info)
+            comp = self._convert_component_info(comp_info, script_guid_map)
             go.components.append(comp)
 
         # Convert children recursively (nested prefab contents already loaded by unityflow)
         for child_node in node.children:
-            child_go = self._convert_hierarchy_node(child_node, go)
+            child_go = self._convert_hierarchy_node(child_node, go, script_guid_map)
             if child_go:
                 go.children.append(child_go)
 
         return go
 
-    def _convert_component_info(self, comp_info: ComponentInfo) -> UnityComponent:
+    def _convert_component_info(
+        self,
+        comp_info: ComponentInfo,
+        script_guid_map: Optional[dict[str, str]] = None,
+    ) -> UnityComponent:
         """Convert a unityflow ComponentInfo to our UnityComponent.
 
         Args:
             comp_info: The unityflow ComponentInfo to convert
+            script_guid_map: Pre-resolved GUID -> script name mapping
 
         Returns:
             Converted UnityComponent
@@ -272,13 +333,12 @@ class UnityFileLoader:
             type_name=class_name,
         )
 
-        # Script resolution: use unityflow's result or resolve lazily
+        # Script resolution: use pre-resolved map, unityflow's result, or fallback
         comp.script_guid = comp_info.script_guid
         if comp_info.script_name:
             comp.script_name = comp_info.script_name
-        elif comp_info.script_guid and self._guid_index:
-            # Lazy resolution - only when needed
-            comp.script_name = self._guid_index.resolve_name(comp_info.script_guid)
+        elif comp_info.script_guid and script_guid_map:
+            comp.script_name = script_guid_map.get(comp_info.script_guid)
 
         # Extract all properties
         comp.properties = self._extract_properties(comp_info.data)
