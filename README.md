@@ -2,7 +2,7 @@
 
 Unity 프리팹 파일을 위한 **시각적** Diff/Merge GUI 도구
 
-![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 ## 개요
@@ -30,7 +30,7 @@ Unity YAML 파일(프리팹, 씬, 에셋)의 변경사항을 Unity 에디터처�
 
 ### 요구 사항
 
-- Python 3.9 이상
+- Python 3.12 이상
 - [unityflow](https://github.com/TrueCyan/unityflow) (권장)
 
 ### 소스에서 설치
