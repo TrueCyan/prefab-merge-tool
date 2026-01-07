@@ -153,17 +153,18 @@ class UnityFileLoader:
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
 
-        # Use unityflow's build_hierarchy() - measure nested prefab loading separately
+        # Build hierarchy WITHOUT script resolution for fast loading
+        # Script names are resolved lazily when accessed
         hierarchy = build_hierarchy(
             self._raw_doc,
-            guid_index=self._guid_index,
+            guid_index=None,  # Skip script resolution during build (expensive)
             project_root=self._project_root,
-            load_nested_prefabs=False,  # Load separately to measure
+            load_nested_prefabs=False,
         )
         t3 = time.perf_counter()
-        logger.info(f"[TIMING] build_hierarchy (no nested): {(t3-t2)*1000:.1f}ms")
+        logger.info(f"[TIMING] build_hierarchy (no scripts): {(t3-t2)*1000:.1f}ms")
 
-        # Load nested prefabs separately to measure
+        # Load nested prefabs (also without script resolution)
         if load_nested:
             nested_count = hierarchy.load_all_nested_prefabs()
             t3b = time.perf_counter()
@@ -271,9 +272,13 @@ class UnityFileLoader:
             type_name=class_name,
         )
 
-        # Use script info directly from unityflow (already resolved)
+        # Script resolution: use unityflow's result or resolve lazily
         comp.script_guid = comp_info.script_guid
-        comp.script_name = comp_info.script_name
+        if comp_info.script_name:
+            comp.script_name = comp_info.script_name
+        elif comp_info.script_guid and self._guid_index:
+            # Lazy resolution - only when needed
+            comp.script_name = self._guid_index.resolve_name(comp_info.script_guid)
 
         # Extract all properties
         comp.properties = self._extract_properties(comp_info.data)
