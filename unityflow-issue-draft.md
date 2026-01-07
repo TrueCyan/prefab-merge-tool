@@ -114,8 +114,49 @@ doc.resolve_game_object_for_component(component)
 - `_build_hierarchy()`: Transform m_Father/m_Children 기반 계층 구조 빌드
 - 컴포넌트 연결 시 stripped GO를 PrefabInstance로 리다이렉트
 
+## 기존 query/set_value와의 통합
+
+현재 unityflow의 경로 기반 API는 fileID 기반:
+
+```python
+# 현재 - fileID를 알아야 함
+query_path(doc, "gameObjects/12345/m_Name")
+set_value(doc, "components/67890/m_Enabled", True)
+```
+
+계층 구조 API와 통합하면:
+
+```python
+# 제안 - 계층 경로로 접근
+hierarchy = doc.build_hierarchy()
+
+# 계층 경로 → fileID 변환
+go = hierarchy.find("Canvas/Panel/Button")  # 이름 기반 탐색
+go = hierarchy.root_objects[0].children[2]  # 인덱스 기반 탐색
+
+# 기존 API와 연동
+set_value(doc, f"gameObjects/{go.file_id}/m_Name", "NewName")
+
+# 또는 계층 객체에서 직접 수정
+go.set_property("m_Name", "NewName")  # 내부적으로 set_value 호출
+go.add_component("MonoBehaviour", script_guid="...")  # 컴포넌트 추가
+```
+
+### Stripped 객체 자동 처리
+
+```python
+# PrefabInstance의 내부 객체 수정 시
+nested_prefab = hierarchy.find("MyNestedPrefab")  # PrefabInstance
+inner_button = nested_prefab.find("Button")       # 소스 프리팹 내부 객체
+
+# m_Modifications에 자동으로 오버라이드 추가
+inner_button.set_property("m_Name", "RenamedButton")
+# -> PrefabInstance의 m_Modifications에 propertyPath: m_Name 추가
+```
+
 ## 기대 효과
 
 1. **사용자 경험 향상**: Unity 내부 구조를 몰라도 자연스럽게 사용 가능
 2. **LLM 친화적**: AI가 prefab 수정 작업을 더 쉽게 수행 가능
 3. **버그 감소**: stripped 객체 처리 실수 방지
+4. **기존 API와 호환**: query_path/set_value와 자연스럽게 연동
