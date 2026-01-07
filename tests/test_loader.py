@@ -24,6 +24,7 @@ class MockComponentInfo:
     is_on_stripped_object: bool = False
     script_guid: str = None
     script_name: str = None
+    modifications: list = None
 
 
 @dataclass

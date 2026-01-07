@@ -164,7 +164,6 @@ class UnityFileLoader:
 
         For PrefabInstance nodes with loaded nested content, merges the
         PrefabInstance with its nested root to avoid duplicate display.
-        Applies m_Modifications from the PrefabInstance to override field values.
 
         Args:
             node: The unityflow HierarchyNode to convert
@@ -176,7 +175,6 @@ class UnityFileLoader:
         # Check if this is a PrefabInstance with loaded nested content
         # In this case, merge with the nested root to avoid duplicate display
         nested_root = None
-        modifications_by_target: dict[int, list[dict]] = {}
 
         if node.is_prefab_instance and node.nested_prefab_loaded and node.children:
             # Find the nested prefab's root (first child that is_from_nested_prefab)
@@ -184,15 +182,6 @@ class UnityFileLoader:
                 if child.is_from_nested_prefab:
                     nested_root = child
                     break
-
-            # Group modifications by target fileID for efficient lookup
-            for mod in node.modifications:
-                target = mod.get("target", {})
-                target_file_id = target.get("fileID", 0)
-                if target_file_id:
-                    if target_file_id not in modifications_by_target:
-                        modifications_by_target[target_file_id] = []
-                    modifications_by_target[target_file_id].append(mod)
 
         # Create UnityGameObject from HierarchyNode
         go = UnityGameObject(
@@ -203,6 +192,12 @@ class UnityFileLoader:
             source_prefab_guid=node.source_guid if node.is_prefab_instance else None,
             prefab_instance_id=str(node.prefab_instance_id) if node.prefab_instance_id else None,
         )
+
+        # Add Transform/RectTransform as first component
+        # unityflow stores transform separately via transform_id, not in node.components
+        transform_comp = self._get_transform_component(node, nested_root)
+        if transform_comp:
+            go.components.append(transform_comp)
 
         # Collect components - merge if nested root exists
         components_by_type: dict[str, ComponentInfo] = {}
@@ -224,18 +219,15 @@ class UnityFileLoader:
             for comp_info in nested_root.components:
                 key = comp_info.script_name or comp_info.class_name
                 final_comp_info = components_by_type[key]
-                # Apply modifications targeting this component
-                mods = modifications_by_target.get(final_comp_info.file_id, [])
-                comp = self._convert_component_info(final_comp_info, mods)
+                # unityflow 0.3.3+ populates ComponentInfo.modifications automatically
+                comp = self._convert_component_info(final_comp_info)
                 go.components.append(comp)
                 seen_keys.add(key)
 
         for comp_info in node.components:
             key = comp_info.script_name or comp_info.class_name
             if key not in seen_keys:
-                # Apply modifications for PrefabInstance's own components
-                mods = modifications_by_target.get(comp_info.file_id, [])
-                comp = self._convert_component_info(comp_info, mods)
+                comp = self._convert_component_info(comp_info)
                 go.components.append(comp)
                 seen_keys.add(key)
 
@@ -258,13 +250,11 @@ class UnityFileLoader:
     def _convert_component_info(
         self,
         comp_info: ComponentInfo,
-        modifications: Optional[list[dict]] = None,
     ) -> UnityComponent:
         """Convert a unityflow ComponentInfo to our UnityComponent.
 
         Args:
             comp_info: The unityflow ComponentInfo to convert
-            modifications: Optional list of m_Modifications targeting this component
 
         Returns:
             Converted UnityComponent
@@ -280,12 +270,69 @@ class UnityFileLoader:
         comp.script_name = comp_info.script_name
 
         # Apply modifications to component data before extracting properties
+        # unityflow 0.3.3+ populates ComponentInfo.modifications automatically
         data = comp_info.data
-        if modifications:
+        if comp_info.modifications:
             # Deep copy to avoid modifying the original data
-            data = self._apply_modifications(copy.deepcopy(data), modifications)
+            data = self._apply_modifications(copy.deepcopy(data), comp_info.modifications)
 
         # Extract all properties
+        comp.properties = self._extract_properties(data)
+
+        return comp
+
+    def _get_transform_component(
+        self,
+        node: HierarchyNode,
+        nested_root: Optional[HierarchyNode],
+    ) -> Optional[UnityComponent]:
+        """Get Transform/RectTransform component from HierarchyNode.
+
+        unityflow stores Transform separately via transform_id, not in components.
+        For nested prefabs, we use the nested_root's transform if available.
+
+        Args:
+            node: The HierarchyNode
+            nested_root: Optional nested prefab root for merging
+
+        Returns:
+            UnityComponent for Transform/RectTransform, or None
+        """
+        # Use nested_root's transform_id if available (for merged prefab instances)
+        source_node = nested_root if nested_root else node
+        transform_id = source_node.transform_id
+
+        if not transform_id or not self._raw_doc:
+            return None
+
+        transform_obj = self._raw_doc.get_by_file_id(transform_id)
+        if not transform_obj:
+            return None
+
+        # Get class name (Transform or RectTransform)
+        class_name = CLASS_IDS.get(transform_obj.class_id, f"Unknown({transform_obj.class_id})")
+
+        comp = UnityComponent(
+            file_id=str(transform_id),
+            type_name=class_name,
+        )
+
+        # Get transform data and apply modifications if any
+        data = transform_obj.get_content() or {}
+
+        # For nested prefabs, apply modifications targeting the transform
+        if node.is_prefab_instance and node.modifications:
+            # Filter modifications targeting this transform
+            transform_mods = []
+            for mod in node.modifications:
+                target = mod.get("target", {})
+                # Match by fileID in source prefab
+                if target.get("fileID") == source_node.transform_id:
+                    transform_mods.append(mod)
+
+            if transform_mods:
+                data = self._apply_modifications(copy.deepcopy(data), transform_mods)
+
         comp.properties = self._extract_properties(data)
 
         return comp
