@@ -153,15 +153,22 @@ class UnityFileLoader:
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
 
-        # Use unityflow's build_hierarchy() with nested prefab loading and GUID resolution
+        # Use unityflow's build_hierarchy() - measure nested prefab loading separately
         hierarchy = build_hierarchy(
             self._raw_doc,
             guid_index=self._guid_index,
             project_root=self._project_root,
-            load_nested_prefabs=load_nested,
+            load_nested_prefabs=False,  # Load separately to measure
         )
         t3 = time.perf_counter()
-        logger.info(f"[TIMING] build_hierarchy: {(t3-t2)*1000:.1f}ms")
+        logger.info(f"[TIMING] build_hierarchy (no nested): {(t3-t2)*1000:.1f}ms")
+
+        # Load nested prefabs separately to measure
+        if load_nested:
+            nested_count = hierarchy.load_all_nested_prefabs()
+            t3b = time.perf_counter()
+            logger.info(f"[TIMING] load_nested_prefabs ({nested_count} prefabs): {(t3b-t3)*1000:.1f}ms")
+            t3 = t3b
 
         # Convert unityflow hierarchy to our internal model
         for root_node in hierarchy.root_objects:
