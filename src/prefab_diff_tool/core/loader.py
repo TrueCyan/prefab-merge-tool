@@ -16,9 +16,10 @@ from unityflow import (
     build_hierarchy,
     HierarchyNode,
     ComponentInfo,
-    get_cached_guid_index,
+    get_lazy_guid_index,
     find_unity_project_root,
     GUIDIndex,
+    LazyGUIDIndex,
     get_prefab_instance_for_stripped,
 )
 
@@ -99,7 +100,7 @@ class UnityFileLoader:
 
     def __init__(self):
         self._raw_doc: Optional[UnityYAMLDocument] = None
-        self._guid_index: Optional[GUIDIndex] = None
+        self._guid_index: Optional[LazyGUIDIndex] = None
         self._project_root: Optional[Path] = None
 
     def load(
@@ -130,9 +131,9 @@ class UnityFileLoader:
         if project_root:
             logger.info(f"Using project root: {project_root}")
             self._project_root = project_root
-            # Only build GUID index if requested (expensive operation)
+            # Use lazy GUID index for fast startup (O(1) init, queries SQLite on-demand)
             if resolve_guids:
-                self._guid_index = get_cached_guid_index(project_root)
+                self._guid_index = get_lazy_guid_index(project_root)
             else:
                 self._guid_index = None
         else:
