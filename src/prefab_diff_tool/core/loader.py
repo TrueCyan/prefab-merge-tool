@@ -2,6 +2,7 @@
 Unity file loader using unityflow.
 
 Converts Unity YAML files to our internal UnityDocument model.
+Uses unityflow's build_hierarchy() for hierarchy parsing.
 """
 
 import logging
@@ -9,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from unityflow import UnityYAMLDocument
+from unityflow import UnityYAMLDocument, build_hierarchy, HierarchyNode, ComponentInfo
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
@@ -81,33 +82,20 @@ def resolve_class_name(class_name: str) -> str:
 
 
 class UnityFileLoader:
-    """Loads Unity YAML files and converts to UnityDocument model."""
+    """Loads Unity YAML files and converts to UnityDocument model.
 
-    # Component type names that are skipped for hierarchy building
-    # Note: PrefabInstance is now handled specially for nested prefab support
-    SKIP_TYPES = frozenset({"Prefab"})
+    Uses unityflow's build_hierarchy() for parsing hierarchy structure,
+    then converts to our internal model with additional features like
+    nested prefab content loading.
+    """
 
     def __init__(self):
         self._raw_doc: Optional[UnityYAMLDocument] = None
-        self._entries_by_id: dict[str, Any] = {}
         self._guid_resolver = GuidResolver()
-        # Maps for PrefabInstance handling
-        self._prefab_instances: dict[str, Any] = {}  # fileID -> PrefabInstance entry
-        self._stripped_transforms: dict[str, str] = {}  # Transform fileID -> PrefabInstance fileID
-        self._stripped_game_objects: dict[str, str] = {}  # GO fileID -> PrefabInstance fileID
-        self._stripped_components: dict[str, str] = {}  # Component fileID -> PrefabInstance fileID
         # Track loading prefabs to prevent circular references
         self._loading_prefabs: set[str] = set()
         # Project root for nested prefab loading
         self._project_root: Optional[Path] = None
-
-    def _get_entry_data(self, entry: Any) -> dict:
-        """Get the data dictionary from a UnityYAMLObject."""
-        if hasattr(entry, "get_content"):
-            content = entry.get_content()
-            if isinstance(content, dict):
-                return content
-        return {}
 
     def load(
         self,
@@ -146,21 +134,17 @@ class UnityFileLoader:
         unity_root: Optional[Path],
         load_nested: bool,
     ) -> UnityDocument:
-        """Internal load implementation."""
+        """Internal load implementation using unityflow's build_hierarchy()."""
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
-        self._entries_by_id = {}
 
         # Find Unity project root and setup GUID resolver
-        # Priority: provided unity_root > auto-detect (non-temp only)
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
         project_root = None
 
-        # Use provided unity_root first (reliable)
         if unity_root:
             project_root = unity_root
             logger.info(f"Using provided unity_root: {project_root}")
         else:
-            # Try auto-detection (may find temp directory - will be validated later)
             project_root = GuidResolver.find_project_root(file_path_obj)
             if project_root:
                 logger.debug(f"Auto-detected project root: {project_root}")
@@ -173,213 +157,130 @@ class UnityFileLoader:
             logger.warning(f"Could not find project root for: {file_path_obj}")
             self._project_root = None
 
-        # Index all entries by their file_id
-        for entry in self._raw_doc.objects:
-            file_id = getattr(entry, "file_id", None)
-            if file_id:
-                self._entries_by_id[str(file_id)] = entry
-
         # Create document
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
 
-        # Reset PrefabInstance tracking
-        self._prefab_instances.clear()
-        self._stripped_transforms.clear()
-        self._stripped_game_objects.clear()
-        self._stripped_components.clear()
+        # Use unityflow's build_hierarchy() for hierarchy parsing
+        hierarchy = build_hierarchy(self._raw_doc)
 
-        # Extract all GameObjects and Components
-        game_objects: dict[str, UnityGameObject] = {}
-        components: dict[str, UnityComponent] = {}
-
-        # First pass: collect PrefabInstances and stripped objects
-        for entry in self._raw_doc.objects:
-            file_id = str(getattr(entry, "file_id", ""))
-            raw_class_name = getattr(entry, "class_name", "Unknown")
-            class_name = resolve_class_name(raw_class_name)
-            is_stripped = getattr(entry, "stripped", False)
-
-            # Collect PrefabInstance entries
-            if class_name == "PrefabInstance":
-                self._prefab_instances[file_id] = entry
-
-            # Collect stripped Transform references
-            if is_stripped and class_name in ("Transform", "RectTransform"):
-                data = self._get_entry_data(entry)
-                prefab_ref = data.get("m_PrefabInstance")
-                if prefab_ref and isinstance(prefab_ref, dict):
-                    prefab_id = str(prefab_ref.get("fileID", ""))
-                    if prefab_id:
-                        self._stripped_transforms[file_id] = prefab_id
-
-            # Collect stripped GameObject references
-            if is_stripped and class_name == "GameObject":
-                data = self._get_entry_data(entry)
-                prefab_ref = data.get("m_PrefabInstance")
-                if prefab_ref and isinstance(prefab_ref, dict):
-                    prefab_id = str(prefab_ref.get("fileID", ""))
-                    if prefab_id:
-                        self._stripped_game_objects[file_id] = prefab_id
-                        logger.debug(
-                            f"Mapped stripped GameObject {file_id} -> PrefabInstance {prefab_id}"
-                        )
-
-            # Collect stripped component references (MonoBehaviour, etc.)
-            # These have m_PrefabInstance but may have m_GameObject: {fileID: 0}
-            if is_stripped and class_name not in ("GameObject", "Transform", "RectTransform", "PrefabInstance"):
-                data = self._get_entry_data(entry)
-                prefab_ref = data.get("m_PrefabInstance")
-                if prefab_ref and isinstance(prefab_ref, dict):
-                    prefab_id = str(prefab_ref.get("fileID", ""))
-                    if prefab_id:
-                        self._stripped_components[file_id] = prefab_id
-                        logger.debug(
-                            f"Mapped stripped {class_name} {file_id} -> PrefabInstance {prefab_id}"
-                        )
-
-        # Second pass: parse GameObjects and Components
-        for entry in self._raw_doc.objects:
-            file_id = str(getattr(entry, "file_id", ""))
-            raw_class_name = getattr(entry, "class_name", "Unknown")
-            # Resolve Unknown(ID) patterns to actual class names
-            class_name = resolve_class_name(raw_class_name)
-            is_stripped = getattr(entry, "stripped", False)
-
-            if class_name == "GameObject":
-                # Skip stripped GameObjects - they're references to nested prefab objects
-                if is_stripped:
-                    continue
-                go = self._parse_game_object(entry, file_id)
-                game_objects[file_id] = go
-                doc.all_objects[file_id] = go
-
-            elif class_name == "PrefabInstance":
-                # Create virtual GameObject for nested prefab
-                virtual_go = self._parse_prefab_instance(entry, file_id, load_nested)
-                if virtual_go:
-                    game_objects[file_id] = virtual_go
-                    doc.all_objects[file_id] = virtual_go
-
-            elif class_name not in self.SKIP_TYPES:
-                comp = self._parse_component(entry, file_id, class_name)
-                components[file_id] = comp
-                doc.all_components[file_id] = comp
-
-        # Build hierarchy relationships
-        self._build_hierarchy(game_objects, components)
-
-        # Find root objects (those without parents)
-        for go in game_objects.values():
-            if go.parent is None:
-                doc.root_objects.append(go)
+        # Convert unityflow hierarchy to our internal model
+        for root_node in hierarchy.root_objects:
+            root_go = self._convert_hierarchy_node(root_node, None, load_nested)
+            if root_go:
+                doc.root_objects.append(root_go)
+                self._collect_all_objects(root_go, doc)
 
         # Sort root objects by name for consistent ordering
         doc.root_objects.sort(key=lambda x: x.name)
 
         return doc
 
-    def _parse_game_object(self, entry: Any, file_id: str) -> UnityGameObject:
-        """Parse a GameObject entry."""
-        data = self._get_entry_data(entry)
-        name = data.get("m_Name", "Unnamed")
-        layer = data.get("m_Layer", 0)
-        tag = data.get("m_TagString", "Untagged")
-        is_active = bool(data.get("m_IsActive", 1))
-
-        return UnityGameObject(
-            file_id=file_id,
-            name=name,
-            layer=layer,
-            tag=tag,
-            is_active=is_active,
-        )
-
-    def _parse_prefab_instance(
-        self, entry: Any, file_id: str, load_nested: bool = True
+    def _convert_hierarchy_node(
+        self,
+        node: HierarchyNode,
+        parent: Optional[UnityGameObject],
+        load_nested: bool,
     ) -> Optional[UnityGameObject]:
-        """Parse a PrefabInstance entry and create a virtual GameObject.
+        """Convert a unityflow HierarchyNode to our UnityGameObject.
 
         Args:
-            entry: The raw PrefabInstance entry
-            file_id: The fileID of this PrefabInstance
-            load_nested: If True, load the source prefab's contents as children
-        """
-        data = self._get_entry_data(entry)
-
-        # Get source prefab reference
-        source_ref = data.get("m_SourcePrefab")
-        source_guid = None
-        if source_ref and isinstance(source_ref, dict):
-            source_guid = source_ref.get("guid")
-
-        # Check for name override in m_Modifications
-        # Unity stores renamed instances like: propertyPath: m_Name, value: "NewName"
-        override_name = self._get_prefab_instance_name_override(data)
-
-        # Try to resolve prefab name from GUID as fallback
-        prefab_name = override_name
-        if not prefab_name and source_guid:
-            prefab_name = self._guid_resolver.resolve(source_guid)
-
-        # Fallback name if resolution fails
-        if not prefab_name:
-            prefab_name = f"PrefabInstance ({file_id[:8]}...)"
-
-        # Create virtual GameObject representing the nested prefab
-        virtual_go = UnityGameObject(
-            file_id=file_id,
-            name=prefab_name,
-            is_prefab_instance=True,
-            source_prefab_guid=source_guid,
-            prefab_instance_id=file_id,
-        )
-
-        logger.debug(f"Created virtual GO for PrefabInstance: {prefab_name} (fileID={file_id})")
-
-        # Load source prefab contents if requested
-        if load_nested and source_guid and self._project_root:
-            self._load_nested_prefab_contents(virtual_go, source_guid, data)
-
-        return virtual_go
-
-    def _get_prefab_instance_name_override(self, data: dict) -> Optional[str]:
-        """Extract name override from PrefabInstance's m_Modifications.
-
-        Args:
-            data: The PrefabInstance data dictionary
+            node: The unityflow HierarchyNode to convert
+            parent: The parent UnityGameObject (or None for root)
+            load_nested: If True, load nested prefab contents
 
         Returns:
-            The overridden name if found, None otherwise
+            Converted UnityGameObject
         """
-        modification = data.get("m_Modification", {})
-        modifications = modification.get("m_Modifications", [])
+        # Create UnityGameObject from HierarchyNode
+        go = UnityGameObject(
+            file_id=str(node.file_id),
+            name=node.name,
+            parent=parent,
+            is_prefab_instance=node.is_prefab_instance,
+            source_prefab_guid=node.source_guid if node.is_prefab_instance else None,
+            prefab_instance_id=str(node.prefab_instance_id) if node.prefab_instance_id else None,
+        )
 
-        for mod in modifications:
-            if not isinstance(mod, dict):
-                continue
-            # Look for m_Name property change on the root object
-            if mod.get("propertyPath") == "m_Name":
-                value = mod.get("value")
-                if value and isinstance(value, str):
-                    logger.debug(f"Found name override in m_Modifications: {value}")
-                    return value
+        # Convert components
+        for comp_info in node.components:
+            comp = self._convert_component_info(comp_info)
+            go.components.append(comp)
 
-        return None
+        # For PrefabInstances, load nested prefab contents if requested
+        if node.is_prefab_instance and load_nested and node.source_guid:
+            self._load_nested_prefab_contents(go, node.source_guid)
+
+        # Convert children recursively
+        for child_node in node.children:
+            child_go = self._convert_hierarchy_node(child_node, go, load_nested)
+            if child_go:
+                go.children.append(child_go)
+
+        return go
+
+    def _convert_component_info(self, comp_info: ComponentInfo) -> UnityComponent:
+        """Convert a unityflow ComponentInfo to our UnityComponent.
+
+        Args:
+            comp_info: The unityflow ComponentInfo to convert
+
+        Returns:
+            Converted UnityComponent
+        """
+        class_name = resolve_class_name(comp_info.class_name)
+        comp = UnityComponent(
+            file_id=str(comp_info.file_id),
+            type_name=class_name,
+        )
+
+        data = comp_info.data
+
+        # Handle MonoBehaviour script resolution
+        if class_name == "MonoBehaviour":
+            script_ref = data.get("m_Script")
+            if script_ref:
+                comp.script_guid = self._extract_guid(script_ref)
+                comp.script_name = self._guess_script_name(data)
+                if not comp.script_name and comp.script_guid:
+                    comp.script_name = self._guid_resolver.resolve(comp.script_guid)
+                    if comp.script_name:
+                        logger.debug(
+                            f"Resolved script GUID {comp.script_guid[:8]}... -> {comp.script_name}"
+                        )
+
+        # Extract all properties
+        comp.properties = self._extract_properties(data)
+
+        return comp
+
+    def _collect_all_objects(self, go: UnityGameObject, doc: UnityDocument) -> None:
+        """Recursively collect all GameObjects and Components into doc's lookup dicts."""
+        doc.all_objects[go.file_id] = go
+        for comp in go.components:
+            doc.all_components[comp.file_id] = comp
+        for child in go.children:
+            self._collect_all_objects(child, doc)
 
     def _load_nested_prefab_contents(
-        self, virtual_go: UnityGameObject, source_guid: str, prefab_data: dict
+        self, virtual_go: UnityGameObject, source_guid: str
     ) -> None:
         """Load the contents of a nested prefab and add as children.
 
-        The nested prefab's root object becomes this virtual_go directly,
-        showing the root's children as virtual_go's children.
+        The nested prefab's root object's children and components are merged
+        into virtual_go, showing the prefab contents under the PrefabInstance.
+
+        Note: The name is already resolved by unityflow's build_hierarchy(),
+        including m_Modifications name overrides.
 
         Args:
             virtual_go: The virtual GameObject representing the PrefabInstance
             source_guid: GUID of the source prefab to load
-            prefab_data: The PrefabInstance data (for checking name overrides)
         """
+        if not self._project_root:
+            logger.debug(f"No project root, skipping nested prefab load for {virtual_go.name}")
+            return
+
         # Resolve GUID to file path
         source_path = self._guid_resolver.resolve_path(source_guid)
         if not source_path:
@@ -390,7 +291,7 @@ class UnityFileLoader:
             return
 
         # Make path absolute if needed
-        if not source_path.is_absolute() and self._project_root:
+        if not source_path.is_absolute():
             source_path = self._project_root / source_path
 
         if not source_path.exists():
@@ -407,8 +308,6 @@ class UnityFileLoader:
 
         try:
             # Use a NEW loader instance to avoid corrupting current loader's state
-            # This is critical - using self.load() would overwrite _entries_by_id,
-            # _stripped_transforms, etc. and break the hierarchy of the parent prefab
             nested_loader = UnityFileLoader()
             nested_loader._loading_prefabs = self._loading_prefabs  # Share circular ref tracking
             nested_doc = nested_loader.load(source_path, self._project_root, load_nested=True)
@@ -417,18 +316,13 @@ class UnityFileLoader:
             if nested_doc.root_objects:
                 root_obj = nested_doc.root_objects[0]
 
-                # Check if there's a name override - if not, use root object's name
-                override_name = self._get_prefab_instance_name_override(prefab_data)
-                if not override_name:
-                    virtual_go.name = root_obj.name
-
                 # Copy root's children directly to virtual_go (skip the root level)
                 for child in root_obj.children:
                     cloned = self._clone_game_object(child, virtual_go)
                     virtual_go.children.append(cloned)
 
                 # Also copy components from root
-                virtual_go.components = root_obj.components
+                virtual_go.components.extend(root_obj.components)
 
                 logger.debug(
                     f"Loaded nested prefab '{virtual_go.name}' with {len(virtual_go.children)} children"
@@ -471,37 +365,6 @@ class UnityFileLoader:
             cloned.children.append(cloned_child)
 
         return cloned
-
-    def _parse_component(
-        self, entry: Any, file_id: str, class_name: str
-    ) -> UnityComponent:
-        """Parse a component entry."""
-        comp = UnityComponent(
-            file_id=file_id,
-            type_name=class_name,
-        )
-
-        data = self._get_entry_data(entry)
-
-        # Handle MonoBehaviour special case
-        if class_name == "MonoBehaviour":
-            script_ref = data.get("m_Script")
-            if script_ref:
-                comp.script_guid = self._extract_guid(script_ref)
-                logger.debug(f"MonoBehaviour script_ref: {script_ref}, extracted GUID: {comp.script_guid}")
-                # Try to get script name from data first, then resolve from GUID
-                comp.script_name = self._guess_script_name(data)
-                if not comp.script_name and comp.script_guid:
-                    comp.script_name = self._guid_resolver.resolve(comp.script_guid)
-                    if comp.script_name:
-                        logger.debug(f"Resolved script GUID {comp.script_guid[:8]}... -> {comp.script_name}")
-                    else:
-                        logger.warning(f"Failed to resolve script GUID: {comp.script_guid}")
-
-        # Extract all properties
-        comp.properties = self._extract_properties(data)
-
-        return comp
 
     def _extract_properties(
         self, data: dict, prefix: str = ""
@@ -554,196 +417,6 @@ class UnityFileLoader:
             if name and isinstance(name, str):
                 return name
         return None
-
-    def _build_hierarchy(
-        self,
-        game_objects: dict[str, UnityGameObject],
-        components: dict[str, UnityComponent],
-    ) -> None:
-        """Build parent-child relationships and attach components."""
-        # First pass: attach components to GameObjects
-        for comp_id, comp in components.items():
-            entry = self._entries_by_id.get(comp_id)
-            if not entry:
-                logger.warning(f"Component {comp_id} ({comp.type_name}) not found in _entries_by_id")
-                continue
-
-            # Find the GameObject this component belongs to
-            data = self._get_entry_data(entry)
-            go_ref = data.get("m_GameObject")
-            go_id = ""
-            if go_ref and isinstance(go_ref, dict):
-                go_id = str(go_ref.get("fileID", ""))
-                # Redirect stripped GO references to their PrefabInstance
-                if go_id in self._stripped_game_objects:
-                    prefab_id = self._stripped_game_objects[go_id]
-                    logger.debug(
-                        f"Component {comp.type_name} redirected from stripped GO {go_id} "
-                        f"to PrefabInstance {prefab_id}"
-                    )
-                    go_id = prefab_id
-
-            # For stripped components with m_GameObject: {fileID: 0}, use m_PrefabInstance
-            if (not go_id or go_id == "0") and comp_id in self._stripped_components:
-                go_id = self._stripped_components[comp_id]
-                logger.debug(
-                    f"Stripped component {comp.type_name} {comp_id} attached to "
-                    f"PrefabInstance {go_id}"
-                )
-
-            if go_id and go_id in game_objects:
-                game_objects[go_id].components.append(comp)
-            elif go_id:
-                logger.warning(
-                    f"Component {comp_id} ({comp.type_name}) has m_GameObject {go_id} "
-                    f"but GO not found in game_objects"
-                )
-            else:
-                logger.warning(
-                    f"Component {comp_id} ({comp.type_name}) has no valid m_GameObject reference"
-                )
-
-        # Build Transform ID -> GameObject index for O(1) lookup
-        # This avoids O(n²) complexity when building hierarchy
-        transform_to_go: dict[str, UnityGameObject] = {}
-        for go in game_objects.values():
-            transform = go.get_transform()
-            if transform:
-                transform_to_go[transform.file_id] = go
-
-        # Add stripped Transform -> PrefabInstance (virtual GO) mappings
-        # This allows objects added to nested prefabs to find their parent
-        for stripped_transform_id, prefab_instance_id in self._stripped_transforms.items():
-            if prefab_instance_id in game_objects:
-                virtual_go = game_objects[prefab_instance_id]
-                transform_to_go[stripped_transform_id] = virtual_go
-                logger.debug(
-                    f"Mapped stripped Transform {stripped_transform_id} -> "
-                    f"PrefabInstance {virtual_go.name}"
-                )
-
-        # Second pass: build hierarchy for PrefabInstances using m_TransformParent
-        for prefab_id, prefab_entry in self._prefab_instances.items():
-            if prefab_id not in game_objects:
-                continue
-
-            virtual_go = game_objects[prefab_id]
-            data = self._get_entry_data(prefab_entry)
-
-            # Get modification data which contains m_TransformParent
-            modification = data.get("m_Modification", {})
-            parent_ref = modification.get("m_TransformParent")
-            if parent_ref and isinstance(parent_ref, dict):
-                parent_transform_id = str(parent_ref.get("fileID", ""))
-                if parent_transform_id and parent_transform_id != "0":
-                    parent_go = transform_to_go.get(parent_transform_id)
-                    if parent_go and virtual_go not in parent_go.children:
-                        virtual_go.parent = parent_go
-                        parent_go.children.append(virtual_go)
-                        logger.debug(
-                            f"PrefabInstance {virtual_go.name} -> parent {parent_go.name}"
-                        )
-
-        # Third pass: build Transform hierarchy using m_Father for regular GameObjects
-        # (Using m_Father is sufficient and avoids duplicate children)
-        for go_id, go in game_objects.items():
-            # Skip PrefabInstances - they use m_TransformParent instead
-            if go.is_prefab_instance:
-                continue
-
-            transform = go.get_transform()
-            if not transform:
-                continue
-
-            # Find transform entry in raw data
-            transform_entry = self._entries_by_id.get(transform.file_id)
-            if not transform_entry:
-                continue
-
-            transform_data = self._get_entry_data(transform_entry)
-
-            # Get parent transform via m_Father
-            father_ref = transform_data.get("m_Father")
-            if father_ref and isinstance(father_ref, dict):
-                father_id = str(father_ref.get("fileID", ""))
-                if father_id and father_id != "0":
-                    # O(1) lookup using index instead of O(n) search
-                    parent_go = transform_to_go.get(father_id)
-                    if parent_go and go not in parent_go.children:
-                        go.parent = parent_go
-                        parent_go.children.append(go)
-
-        # Sort children by m_Children order (Unity's actual hierarchy order)
-        self._sort_children_by_transform_order(game_objects, transform_to_go)
-
-    def _sort_children_by_transform_order(
-        self,
-        game_objects: dict[str, UnityGameObject],
-        transform_to_go: dict[str, UnityGameObject],
-    ) -> None:
-        """Sort children according to Transform's m_Children order."""
-        for go in game_objects.values():
-            if not go.children:
-                continue
-
-            # Get Transform's m_Children order
-            transform = go.get_transform()
-            if not transform:
-                # For PrefabInstances without transform, keep current order
-                continue
-
-            transform_entry = self._entries_by_id.get(transform.file_id)
-            if not transform_entry:
-                continue
-
-            transform_data = self._get_entry_data(transform_entry)
-            m_children = transform_data.get("m_Children", [])
-
-            if not m_children:
-                # No m_Children info, keep current order (don't sort by name)
-                continue
-
-            # Build order map: transform_id -> index
-            child_order: dict[str, int] = {}
-            for idx, child_ref in enumerate(m_children):
-                if isinstance(child_ref, dict):
-                    child_transform_id = str(child_ref.get("fileID", ""))
-                    if child_transform_id:
-                        child_order[child_transform_id] = idx
-
-            # Sort children using a helper method to avoid closure issues
-            self._sort_children_list(go.children, child_order, len(m_children))
-
-    def _sort_children_list(
-        self,
-        children: list[UnityGameObject],
-        child_order: dict[str, int],
-        fallback_index: int,
-    ) -> None:
-        """Sort a children list by transform order.
-
-        Args:
-            children: List of children to sort in place
-            child_order: Map of transform_id -> sort index
-            fallback_index: Index to use for items not found in child_order
-        """
-        def get_sort_key(child_go: UnityGameObject) -> tuple[int, str]:
-            # For regular GameObjects, use their transform's fileID
-            child_transform = child_go.get_transform()
-            if child_transform and child_transform.file_id in child_order:
-                return (child_order[child_transform.file_id], child_go.name)
-
-            # For PrefabInstances, check stripped transforms
-            if child_go.is_prefab_instance and child_go.prefab_instance_id:
-                # Find stripped transform that maps to this PrefabInstance
-                for stripped_id, prefab_id in self._stripped_transforms.items():
-                    if prefab_id == child_go.prefab_instance_id and stripped_id in child_order:
-                        return (child_order[stripped_id], child_go.name)
-
-            # Fallback: put at end, sorted by name
-            return (fallback_index, child_go.name)
-
-        children.sort(key=get_sort_key)
 
 
 def load_unity_file(
