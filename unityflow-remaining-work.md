@@ -51,39 +51,36 @@ def build_guid_index(project_root: Path, include_packages: bool = True) -> GUIDI
 
 ---
 
-## 2. [낮음] CLASS_IDS 검토 및 확장
+## 2. [낮음] CLASS_IDS 확장
 
 ### 참조
 
 Unity 공식 Class ID Reference:
-https://docs.unity3d.com/Manual/ClassIDReference.html
+https://docs.unity3d.com/6000.3/Documentation/Manual/ClassIDReference.html
 
-(또는 실제 Unity 프로젝트의 YAML 파일에서 `--- !u!{class_id}` 패턴으로 확인)
-
-### 현재 누락 목록 (prefab-merge-tool 기준)
+### unityflow에 누락된 ID (Unity 6.3 LTS 기준)
 
 ```python
 {
     50: "Rigidbody2D",
     55: "PhysicsManager",
-    57: "Joint2D",
-    71: "EdgeCollider2D",
-    119: "LightProbes",
+    150: "PreloadData",
+    319: "AvatarMask",
     320: "PlayableDirector",
     328: "VideoPlayer",
     329: "VideoClip",
     331: "SpriteMask",
-    387: "TilemapRenderer",
-    483: "Tilemap",
-    1101: "PrefabInstance",
-    1102: "PrefabModification",
-    # ... 총 22개
+    363: "OcclusionCullingData",
 }
 ```
 
+### 참고: unityflow CLASS_IDS 오류
+
+ID 156이 `TerrainCollider`로 되어있지만 공식 문서에는 `TerrainData`
+
 ### 우선순위: 낮음
 
-- prefab-merge-tool에서 자체 보완 중
+- prefab-merge-tool에서 `ADDITIONAL_CLASS_IDS`로 보완 중
 - unityflow에 추가하면 다른 사용자도 혜택
 
 ---

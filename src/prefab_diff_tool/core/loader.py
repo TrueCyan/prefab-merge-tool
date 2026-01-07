@@ -22,6 +22,7 @@ from unityflow import (
     LazyGUIDIndex,
     get_prefab_instance_for_stripped,
 )
+from unityflow.parser import CLASS_IDS
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
@@ -34,60 +35,34 @@ from prefab_diff_tool.core.unity_model import (
 logger = logging.getLogger(__name__)
 
 
-# Additional Unity class IDs not in unityflow's mapping
-# Reference: https://docs.unity3d.com/Manual/ClassIDReference.html
-ADDITIONAL_CLASS_IDS = {
+# Additional Unity class IDs not in unityflow's CLASS_IDS
+# Reference: https://docs.unity3d.com/6000.3/Documentation/Manual/ClassIDReference.html
+_ADDITIONAL_CLASS_IDS = {
     50: "Rigidbody2D",
     55: "PhysicsManager",
-    57: "Joint2D",
-    58: "HingeJoint2D",
-    59: "SpringJoint2D",
-    60: "DistanceJoint2D",
-    61: "SliderJoint2D",
-    62: "RelativeJoint2D",
-    64: "FixedJoint2D",
-    65: "FrictionJoint2D",
-    66: "TargetJoint2D",
-    68: "WheelJoint2D",
-    70: "CompositeCollider2D",
-    71: "EdgeCollider2D",
-    72: "CapsuleCollider2D",
-    119: "LightProbes",
-    127: "LevelGameManager",
-    129: "LandscapeProxy",
-    131: "UnityAnalyticsManager",
     150: "PreloadData",
-    156: "TerrainData",
-    157: "LightmapSettings",
-    171: "SampleClip",
-    194: "TerrainData",
-    218: "Terrain",
-    226: "BillboardAsset",
-    238: "NavMeshData",
-    290: "StreamingController",
     319: "AvatarMask",
     320: "PlayableDirector",
     328: "VideoPlayer",
     329: "VideoClip",
     331: "SpriteMask",
-    362: "SpriteShapeRenderer",
     363: "OcclusionCullingData",
-    387: "TilemapRenderer",
-    483: "Tilemap",
-    1101: "PrefabInstance",
-    1102: "PrefabModification",
 }
 
 # Pattern to match "Unknown(ID)" format
-UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
+_UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
 
 
 def resolve_class_name(class_name: str) -> str:
-    """Resolve class name, handling Unknown(ID) format."""
-    match = UNKNOWN_PATTERN.match(class_name)
+    """Resolve class name, handling Unknown(ID) format.
+
+    Uses unityflow's CLASS_IDS first, then falls back to additional IDs.
+    """
+    match = _UNKNOWN_PATTERN.match(class_name)
     if match:
         class_id = int(match.group(1))
-        return ADDITIONAL_CLASS_IDS.get(class_id, class_name)
+        # Try unityflow's mapping first, then our additions
+        return CLASS_IDS.get(class_id) or _ADDITIONAL_CLASS_IDS.get(class_id, class_name)
     return class_name
 
 
