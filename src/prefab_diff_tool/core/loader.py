@@ -107,6 +107,7 @@ class UnityFileLoader:
         file_path: Path,
         unity_root: Optional[Path] = None,
         load_nested: bool = True,
+        resolve_guids: bool = True,
     ) -> UnityDocument:
         """
         Load a Unity YAML file and convert to UnityDocument.
@@ -115,6 +116,7 @@ class UnityFileLoader:
             file_path: Path to the Unity file (.prefab, .unity, .asset, etc.)
             unity_root: Optional Unity project root for GUID resolution
             load_nested: If True, load contents of nested prefabs (default True)
+            resolve_guids: If True, build GUID index for script name resolution (slower)
 
         Returns:
             UnityDocument with parsed hierarchy
@@ -128,8 +130,11 @@ class UnityFileLoader:
         if project_root:
             logger.info(f"Using project root: {project_root}")
             self._project_root = project_root
-            # Get cached GUID index for script name resolution
-            self._guid_index = get_cached_guid_index(project_root)
+            # Only build GUID index if requested (expensive operation)
+            if resolve_guids:
+                self._guid_index = get_cached_guid_index(project_root)
+            else:
+                self._guid_index = None
         else:
             logger.warning(f"Could not find project root for: {file_path_obj}")
             self._project_root = None
@@ -183,8 +188,10 @@ class UnityFileLoader:
             # Get the parent PrefabInstance for this stripped object
             prefab_id = get_prefab_instance_for_stripped(self._raw_doc, entry.file_id)
             if prefab_id:
-                doc.stripped_to_prefab[file_id] = str(prefab_id)
-                logger.debug(f"Mapped stripped {entry.class_name} {file_id} -> PrefabInstance {prefab_id}")
+                # Resolve class name (handle Unknown(ID) format)
+                class_name = resolve_class_name(entry.class_name)
+                doc.stripped_to_prefab[file_id] = (str(prefab_id), class_name)
+                logger.debug(f"Mapped stripped {class_name} {file_id} -> PrefabInstance {prefab_id}")
 
     def _convert_hierarchy_node(
         self,
@@ -297,6 +304,7 @@ def load_unity_file(
     file_path: Path,
     unity_root: Optional[Path] = None,
     load_nested: bool = True,
+    resolve_guids: bool = True,
 ) -> UnityDocument:
     """
     Convenience function to load a Unity file.
@@ -305,9 +313,15 @@ def load_unity_file(
         file_path: Path to the Unity file
         unity_root: Optional Unity project root for GUID resolution
         load_nested: If True, load contents of nested prefabs (default True)
+        resolve_guids: If True, build GUID index for script name resolution (slower)
 
     Returns:
         UnityDocument with parsed hierarchy
     """
     loader = UnityFileLoader()
-    return loader.load(file_path, unity_root=unity_root, load_nested=load_nested)
+    return loader.load(
+        file_path,
+        unity_root=unity_root,
+        load_nested=load_nested,
+        resolve_guids=resolve_guids,
+    )
