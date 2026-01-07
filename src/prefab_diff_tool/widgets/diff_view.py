@@ -2,11 +2,14 @@
 2-way diff view widget.
 """
 
+import logging
 import platform
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -578,15 +581,30 @@ class DiffView(QWidget):
 
     def _on_external_reference_clicked(self, guid: str) -> None:
         """Handle external reference click - open file explorer to show the asset."""
-        if not guid or not self._guid_resolver:
+        logger.debug(f"External reference clicked: guid={guid}")
+
+        if not guid:
+            logger.debug("No GUID provided")
+            return
+
+        if not self._guid_resolver:
+            logger.debug("No GUID resolver available")
             return
 
         # Resolve GUID to file path
         asset_path = self._guid_resolver.resolve_path(guid)
-        if not asset_path or not asset_path.exists():
+        logger.debug(f"Resolved path: {asset_path}")
+
+        if not asset_path:
+            logger.debug(f"Could not resolve GUID {guid} to path")
+            return
+
+        if not asset_path.exists():
+            logger.debug(f"Path does not exist: {asset_path}")
             return
 
         # Open file explorer and select the file
+        logger.debug(f"Opening file explorer for: {asset_path}")
         self._show_in_file_explorer(asset_path)
 
     def _show_in_file_explorer(self, path: Path) -> None:
