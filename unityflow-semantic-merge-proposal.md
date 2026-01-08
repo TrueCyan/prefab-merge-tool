@@ -1,27 +1,26 @@
-# Unityflow 시맨틱 Diff/Merge 기능 제안
+# Unityflow Diff/Merge 시맨틱 구현 제안
+
+## 개요
+
+**기존 API를 유지**하면서 **내부 구현만 시맨틱 기반으로 교체**
+
+```python
+# 변경 전
+def three_way_merge(base, ours, theirs):  # 텍스트 라인 기반
+
+# 변경 후
+def three_way_merge(base, ours, theirs):  # 시맨틱 속성 기반 (API 동일)
+```
+
+---
 
 ## 현재 상황 분석
 
 ### unityflow의 현재 상태
-- **diff 기능**: 없음 (텍스트 diff만 가능)
+- **diff 기능**: 없음
 - **merge 기능**: `merge.py`에 텍스트 라인 기반 구현
 
-### unityflow의 현재 merge.py
-- **텍스트 라인 기반** diff3 알고리즘
-- `SequenceMatcher`를 사용해 라인 단위 변경 감지
-- 충돌 시 `<<<<<<< ours` / `=======` / `>>>>>>> theirs` 마커 삽입
-
-```python
-# 현재 방식
-def three_way_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
-    """라인 단위 텍스트 머지"""
-    base_lines = base.splitlines()
-    ours_lines = ours.splitlines()
-    theirs_lines = theirs.splitlines()
-    # ... SequenceMatcher로 라인 비교 ...
-```
-
-### 문제점
+### 현재 merge.py 문제점
 1. **시맨틱 정보 손실**: Unity YAML의 구조적 의미를 무시하고 텍스트로만 처리
 2. **불필요한 충돌**: 같은 속성이 다른 라인에 있으면 충돌로 판정
 3. **정확한 충돌 위치 파악 불가**: 어떤 GameObject의 어떤 Component의 어떤 속성이 충돌인지 알 수 없음
@@ -29,11 +28,13 @@ def three_way_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
 
 ---
 
-## 제안 1: 시맨틱 Diff API (2-way 비교)
+## 제안 1: diff() 함수 추가 (2-way 비교)
 
-### PropertyChange 데이터 클래스
+### 데이터 클래스
 
 ```python
+# unityflow/diff.py
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
@@ -46,71 +47,36 @@ class ChangeType(Enum):
 @dataclass
 class PropertyChange:
     """속성 레벨 변경 정보"""
-
-    # 위치 정보
     game_object_path: str      # "Player/Body/Weapon"
     component_type: str        # "Transform", "MonoBehaviour" 등
     component_file_id: int     # 컴포넌트의 fileID
     property_path: str         # "m_LocalPosition.x"
-
-    # 변경 정보
     change_type: ChangeType
-    old_value: Optional[Any]   # left 값 (REMOVED, MODIFIED)
-    new_value: Optional[Any]   # right 값 (ADDED, MODIFIED)
+    old_value: Optional[Any]
+    new_value: Optional[Any]
 
     @property
     def full_path(self) -> str:
         return f"{self.game_object_path}.{self.component_type}.{self.property_path}"
-```
 
-### SemanticDiffResult 데이터 클래스
-
-```python
 @dataclass
-class SemanticDiffResult:
-    """시맨틱 diff 결과"""
-
-    left_doc: UnityYAMLDocument
-    right_doc: UnityYAMLDocument
-
-    # 변경 목록
+class DiffResult:
+    """diff 결과"""
     changes: list[PropertyChange]
-
-    # 요약
     added_count: int
     removed_count: int
     modified_count: int
-
-    @property
-    def total_changes(self) -> int:
-        return self.added_count + self.removed_count + self.modified_count
-
-    @property
-    def has_changes(self) -> bool:
-        return self.total_changes > 0
 ```
 
-### semantic_diff() 함수
+### diff() 함수
 
 ```python
-def semantic_diff(
+def diff(
     left_doc: UnityYAMLDocument,
     right_doc: UnityYAMLDocument,
-    *,
-    ignore_order: bool = True,        # 배열 순서 무시
-    flatten_properties: bool = True,  # 중첩 속성 펼치기 (m_LocalPosition.x)
-) -> SemanticDiffResult:
+) -> DiffResult:
     """
-    시맨틱 2-way diff 수행
-
-    Args:
-        left_doc: 이전 버전 문서
-        right_doc: 새 버전 문서
-        ignore_order: 배열 순서 변경 무시
-        flatten_properties: 중첩 dict를 개별 속성으로 펼침
-
-    Returns:
-        SemanticDiffResult: diff 결과
+    2-way diff (내부적으로 시맨틱 비교)
     """
     pass
 ```
@@ -119,32 +85,20 @@ def semantic_diff(
 
 ```python
 from unityflow import UnityYAMLDocument
-from unityflow.diff import semantic_diff
+from unityflow.diff import diff
 
-# 문서 로드
-old_doc = UnityYAMLDocument.load("old_version.prefab")
-new_doc = UnityYAMLDocument.load("new_version.prefab")
+old_doc = UnityYAMLDocument.load("old.prefab")
+new_doc = UnityYAMLDocument.load("new.prefab")
 
-# 시맨틱 diff 수행
-result = semantic_diff(old_doc, new_doc)
-
-print(f"변경사항 {result.total_changes}개:")
-print(f"  추가: {result.added_count}")
-print(f"  삭제: {result.removed_count}")
-print(f"  수정: {result.modified_count}")
+result = diff(old_doc, new_doc)
 
 for change in result.changes:
-    if change.change_type == ChangeType.MODIFIED:
-        print(f"  {change.full_path}: {change.old_value} → {change.new_value}")
-    elif change.change_type == ChangeType.ADDED:
-        print(f"  + {change.full_path}: {change.new_value}")
-    elif change.change_type == ChangeType.REMOVED:
-        print(f"  - {change.full_path}: {change.old_value}")
+    print(f"{change.change_type.value}: {change.full_path}")
 ```
 
 ---
 
-## 제안 2: 시맨틱 Merge API (3-way 비교)
+## 제안 2: three_way_merge() 내부 구현 변경 (3-way 비교)
 
 ### PropertyConflict 데이터 클래스
 
@@ -175,54 +129,34 @@ class PropertyConflict:
         return f"{self.game_object_path}.{self.component_type}.{self.property_path}"
 ```
 
-### 2. SemanticMergeResult 데이터 클래스
+### MergeResult 데이터 클래스
 
 ```python
+# unityflow/merge.py
+
 @dataclass
-class SemanticMergeResult:
-    """시맨틱 머지 결과"""
-
-    # 머지된 문서 (UnityYAMLDocument)
+class MergeResult:
+    """머지 결과"""
     merged_document: UnityYAMLDocument
-
-    # 충돌 목록
     conflicts: list[PropertyConflict]
-
-    # 자동 머지된 변경사항
     auto_merged: list[PropertyChange]
-
-    # 상태
     has_conflicts: bool
     conflict_count: int
-
-    @property
-    def is_clean(self) -> bool:
-        return not self.has_conflicts
 ```
 
-### 3. semantic_three_way_merge() 함수
+### three_way_merge() 함수 (기존 API 유지, 내부만 변경)
 
 ```python
-def semantic_three_way_merge(
+def three_way_merge(
     base_doc: UnityYAMLDocument,
     ours_doc: UnityYAMLDocument,
     theirs_doc: UnityYAMLDocument,
-    *,
-    auto_resolve_identical: bool = True,  # 동일한 변경은 자동 머지
-    ignore_order: bool = True,            # 배열 순서 무시 (m_Children 등)
-) -> SemanticMergeResult:
+) -> MergeResult:
     """
-    시맨틱 3-way 머지 수행
+    3-way 머지 (내부적으로 시맨틱 비교)
 
-    Args:
-        base_doc: 공통 조상 문서
-        ours_doc: 내 변경 문서
-        theirs_doc: 상대 변경 문서
-        auto_resolve_identical: 양쪽이 같은 값으로 변경했으면 자동 머지
-        ignore_order: 배열 순서 변경은 충돌로 처리하지 않음
-
-    Returns:
-        SemanticMergeResult: 머지 결과
+    - 기존 텍스트 기반 → 시맨틱 기반으로 교체
+    - API 시그니처 유지
     """
     pass
 ```
@@ -386,80 +320,35 @@ result.merged_document.save("merged.prefab")
 ### 변경이 필요한 파일
 
 1. **diff_view.py**
-   - `_perform_diff()` → `semantic_diff()` 호출로 대체
-   - 반환된 `PropertyChange` 리스트를 UI에 표시
+   - `_perform_diff()` → `unityflow.diff.diff()` 호출로 대체
 
 2. **merge_view.py**
-   - `_perform_merge()` → `semantic_three_way_merge()` 호출로 대체
-   - 반환된 `PropertyConflict` 리스트를 그대로 UI에 표시
+   - `_perform_merge()` → `unityflow.merge.three_way_merge()` 호출로 대체
 
 3. **writer.py**
-   - `write_text_merge()` → `semantic merge` 결과 문서 저장으로 대체
-   - `_apply_text_resolutions()` 불필요 (이미 문서에 적용됨)
+   - `write_text_merge()` → 머지된 문서 저장으로 대체
 
 ### 통합 코드 예시
 
 ```python
-# diff_view.py 수정
+# diff_view.py
 def _perform_diff(self) -> None:
-    """시맨틱 2-way diff 수행"""
-    from unityflow.diff import semantic_diff
-
-    result = semantic_diff(
-        self._left_raw_doc,
-        self._right_raw_doc,
-    )
-
-    # PropertyChange → Change 변환
-    self._changes = [
-        Change(
-            path=c.full_path,
-            status=DiffStatus(c.change_type.value),
-            left_value=c.old_value,
-            right_value=c.new_value,
-        )
-        for c in result.changes
-    ]
-
-    self._diff_result = DiffResult(
-        left=self._left_doc,
-        right=self._right_doc,
-        changes=self._changes,
-        summary=DiffSummary(
-            added_objects=result.added_count,
-            removed_objects=result.removed_count,
-            modified_properties=result.modified_count,
-        ),
-    )
+    from unityflow.diff import diff
+    result = diff(self._left_raw_doc, self._right_raw_doc)
+    self._changes = result.changes
 ```
 
 ```python
-# merge_view.py 수정
+# merge_view.py
 def _perform_merge(self) -> None:
-    """시맨틱 3-way 머지 수행"""
-    from unityflow.merge import semantic_three_way_merge
-
-    result = semantic_three_way_merge(
+    from unityflow.merge import three_way_merge
+    result = three_way_merge(
         self._base_raw_doc,
         self._ours_raw_doc,
         self._theirs_raw_doc,
     )
-
-    # PropertyConflict → MergeConflict 변환
-    self._conflicts = [
-        MergeConflict(
-            path=c.full_path,
-            base_value=c.base_value,
-            ours_value=c.ours_value,
-            theirs_value=c.theirs_value,
-        )
-        for c in result.conflicts
-    ]
-
-    # 머지된 문서 저장용으로 보관
+    self._conflicts = result.conflicts
     self._merged_doc = result.merged_document
-
-    self._update_conflict_label()
 ```
 
 ---
@@ -467,19 +356,17 @@ def _perform_merge(self) -> None:
 ## 우선순위
 
 ### Phase 1: 기본 구현
-1. **High**: `PropertyChange`, `PropertyConflict` 데이터 클래스
-2. **High**: `semantic_diff()` 기본 구현 (2-way)
-3. **High**: `semantic_three_way_merge()` 기본 구현 (3-way)
+1. `PropertyChange`, `PropertyConflict` 데이터 클래스
+2. `diff()` 구현 (2-way)
+3. `three_way_merge()` 내부를 시맨틱으로 교체 (3-way)
 
-### Phase 2: 옵션 및 개선
-4. **Medium**: 배열 순서 무시 옵션 (`m_Children`, `m_Materials` 등)
-5. **Medium**: 속성 펼치기 옵션 (`m_LocalPosition` → `m_LocalPosition.x/y/z`)
-6. **Medium**: `apply_resolution()` 함수
+### Phase 2: 개선
+4. 배열 순서 무시 (`m_Children` 등)
+5. `apply_resolution()` 함수
 
 ### Phase 3: 특수 케이스
-7. **Low**: 중첩 프리팹(PrefabInstance) `m_Modifications` 처리
-8. **Low**: MonoBehaviour 커스텀 속성 처리
-9. **Low**: file_id 불일치 시 fallback 매칭 (type + name)
+6. PrefabInstance `m_Modifications` 처리
+7. file_id 불일치 시 fallback 매칭
 
 ---
 
