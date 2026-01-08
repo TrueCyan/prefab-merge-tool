@@ -881,14 +881,12 @@ class ReferenceFieldWidget(QWidget):
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
         display = self._resolve_reference(value)
-        print(f"[DEBUG] ReferenceFieldWidget._setup_ui: file_id={file_id}, guid={guid!r}, display={display}")
 
         # Create clickable button for non-None references
         if file_id != 0:
             ref_btn = QPushButton(display)
             ref_btn.setFlat(True)
             ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            print(f"[DEBUG]   Created button for: {display}")
 
             if is_modified:
                 ref_btn.setStyleSheet(
@@ -936,17 +934,12 @@ class ReferenceFieldWidget(QWidget):
 
     def _on_click(self, value: dict) -> None:
         """Handle click on reference."""
-        print(f"[DEBUG] ReferenceFieldWidget._on_click called with value={value}")
-        logger.debug(f"ReferenceFieldWidget._on_click called with value={value}")
         file_id = str(value.get("fileID", 0))
         # Handle None guid (can happen if YAML has 'guid: null')
         guid = value.get("guid") or ""
-        print(f"[DEBUG]   file_id={file_id}, guid={guid!r}")
-        logger.debug(f"  file_id={file_id}, guid={guid!r}")
 
         if guid:
             # External reference
-            logger.debug(f"  Emitting external_reference_clicked with guid={guid}")
             self.external_reference_clicked.emit(guid)
         else:
             # Internal reference - check if it's a stripped object
@@ -955,11 +948,9 @@ class ReferenceFieldWidget(QWidget):
                 if result:
                     # Navigate to the PrefabInstance instead
                     prefab, _ = result
-                    logger.debug(f"  Emitting reference_clicked for stripped object: {prefab.file_id}")
                     self.reference_clicked.emit(prefab.file_id, "")
                     return
             # Regular internal reference
-            logger.debug(f"  Emitting reference_clicked with file_id={file_id}")
             self.reference_clicked.emit(file_id, guid)
 
 
