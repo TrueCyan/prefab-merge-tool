@@ -904,7 +904,8 @@ class ReferenceFieldWidget(QWidget):
                     "QPushButton:hover { background-color: #4a4a4a; text-decoration: underline; }"
                 )
 
-            ref_btn.clicked.connect(lambda: self._on_click(value))
+            # Use default argument to capture value immediately (avoid late binding)
+            ref_btn.clicked.connect(lambda checked=False, v=value: self._on_click(v))
             layout.addWidget(ref_btn, 1)
         else:
             # None reference - just show label
@@ -933,10 +934,12 @@ class ReferenceFieldWidget(QWidget):
 
     def _on_click(self, value: dict) -> None:
         """Handle click on reference."""
+        print(f"[DEBUG] ReferenceFieldWidget._on_click called with value={value}")
         logger.debug(f"ReferenceFieldWidget._on_click called with value={value}")
         file_id = str(value.get("fileID", 0))
         # Handle None guid (can happen if YAML has 'guid: null')
         guid = value.get("guid") or ""
+        print(f"[DEBUG]   file_id={file_id}, guid={guid!r}")
         logger.debug(f"  file_id={file_id}, guid={guid!r}")
 
         if guid:
