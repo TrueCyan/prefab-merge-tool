@@ -96,6 +96,9 @@ class TreeNode:
         if self.data is None:
             return ""
         if isinstance(self.data, UnityGameObject):
+            # Show special icon for nested prefab instances
+            if self.data.is_prefab_instance:
+                return HIERARCHY_ICONS.get("prefab_instance", "🔷")
             if not self.data.is_active:
                 return HIERARCHY_ICONS.get("gameobject_inactive", "📦")
             return HIERARCHY_ICONS.get("gameobject", "📦")

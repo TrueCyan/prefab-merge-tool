@@ -59,11 +59,16 @@ class UnityGameObject:
     children: list["UnityGameObject"] = field(default_factory=list)
     parent: Optional["UnityGameObject"] = field(default=None, repr=False)
     diff_status: DiffStatus = DiffStatus.UNCHANGED
-    
+
     # Additional metadata
     layer: int = 0
     tag: str = "Untagged"
     is_active: bool = True
+
+    # PrefabInstance support
+    is_prefab_instance: bool = False  # True if this is a nested prefab instance
+    source_prefab_guid: Optional[str] = None  # GUID of the source prefab
+    prefab_instance_id: Optional[str] = None  # fileID of the PrefabInstance entry
     
     def get_component(self, type_name: str) -> Optional[UnityComponent]:
         """Get first component of given type."""
@@ -107,6 +112,10 @@ class UnityDocument:
     unity_version: Optional[str] = None
     project_root: Optional[str] = None  # Unity project root path
 
+    # Stripped object mapping: stripped_file_id -> (prefab_instance_file_id, class_name)
+    # Used for resolving references to stripped components inside nested prefabs
+    stripped_to_prefab: dict[str, tuple[str, str]] = field(default_factory=dict)
+
     # Reverse lookup cache: component_id -> owner GameObject
     _component_owners: Optional[dict[str, "UnityGameObject"]] = field(
         default=None, repr=False
@@ -119,6 +128,28 @@ class UnityDocument:
     def get_component(self, file_id: str) -> Optional[UnityComponent]:
         """Get component by fileID."""
         return self.all_components.get(file_id)
+
+    def resolve_stripped_reference(
+        self, file_id: str
+    ) -> Optional[tuple[UnityGameObject, str]]:
+        """Resolve a stripped object reference to its parent PrefabInstance.
+
+        When a reference points to a stripped component (a placeholder for a component
+        inside a nested prefab), this method finds the PrefabInstance that contains it.
+
+        Args:
+            file_id: The file_id of the stripped object
+
+        Returns:
+            Tuple of (PrefabInstance GameObject, stripped class_name), or None if not found
+        """
+        mapping = self.stripped_to_prefab.get(file_id)
+        if mapping:
+            prefab_id, class_name = mapping
+            prefab = self.all_objects.get(prefab_id)
+            if prefab:
+                return (prefab, class_name)
+        return None
 
     def get_component_owner(self, component_id: str) -> Optional["UnityGameObject"]:
         """Get the GameObject that owns a component (O(1) lookup)."""

@@ -2,14 +2,28 @@
 Unity file loader using unityflow.
 
 Converts Unity YAML files to our internal UnityDocument model.
+Uses unityflow's build_hierarchy() for hierarchy parsing, including
+nested prefab loading and script name resolution.
 """
 
+import copy
 import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
 
-from unityflow import UnityYAMLDocument
+from unityflow import (
+    UnityYAMLDocument,
+    build_hierarchy,
+    HierarchyNode,
+    ComponentInfo,
+    get_lazy_guid_index,
+    find_unity_project_root,
+    GUIDIndex,
+    LazyGUIDIndex,
+    get_prefab_instance_for_stripped,
+)
+from unityflow.parser import CLASS_IDS
 
 from prefab_diff_tool.core.unity_model import (
     UnityDocument,
@@ -17,96 +31,44 @@ from prefab_diff_tool.core.unity_model import (
     UnityComponent,
     UnityProperty,
 )
-from prefab_diff_tool.utils.guid_resolver import GuidResolver
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-
-# Additional Unity class IDs not in unityflow's mapping
-# Reference: https://docs.unity3d.com/Manual/ClassIDReference.html
-ADDITIONAL_CLASS_IDS = {
-    50: "Rigidbody2D",
-    55: "PhysicsManager",
-    57: "Joint2D",
-    58: "HingeJoint2D",
-    59: "SpringJoint2D",
-    60: "DistanceJoint2D",
-    61: "SliderJoint2D",
-    62: "RelativeJoint2D",
-    64: "FixedJoint2D",
-    65: "FrictionJoint2D",
-    66: "TargetJoint2D",
-    68: "WheelJoint2D",
-    70: "CompositeCollider2D",
-    71: "EdgeCollider2D",
-    72: "CapsuleCollider2D",
-    119: "LightProbes",
-    127: "LevelGameManager",
-    129: "LandscapeProxy",
-    131: "UnityAnalyticsManager",
-    150: "PreloadData",
-    156: "TerrainData",
-    157: "LightmapSettings",
-    171: "SampleClip",
-    194: "TerrainData",
-    218: "Terrain",
-    226: "BillboardAsset",
-    238: "NavMeshData",
-    290: "StreamingController",
-    319: "AvatarMask",
-    320: "PlayableDirector",
-    328: "VideoPlayer",
-    329: "VideoClip",
-    331: "SpriteMask",
-    362: "SpriteShapeRenderer",
-    363: "OcclusionCullingData",
-    387: "TilemapRenderer",
-    483: "Tilemap",
-    1101: "PrefabInstance",
-    1102: "PrefabModification",
-}
-
 # Pattern to match "Unknown(ID)" format
-UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
+_UNKNOWN_PATTERN = re.compile(r"Unknown\((\d+)\)")
 
 
 def resolve_class_name(class_name: str) -> str:
-    """Resolve class name, handling Unknown(ID) format."""
-    match = UNKNOWN_PATTERN.match(class_name)
+    """Resolve class name, handling Unknown(ID) format.
+
+    Uses unityflow's CLASS_IDS for resolution.
+    """
+    match = _UNKNOWN_PATTERN.match(class_name)
     if match:
         class_id = int(match.group(1))
-        return ADDITIONAL_CLASS_IDS.get(class_id, class_name)
+        return CLASS_IDS.get(class_id, class_name)
     return class_name
 
 
 class UnityFileLoader:
-    """Loads Unity YAML files and converts to UnityDocument model."""
+    """Loads Unity YAML files and converts to UnityDocument model.
 
-    # Component type names that are skipped for hierarchy building
-    SKIP_TYPES = frozenset({"Prefab", "PrefabInstance"})
+    Uses unityflow's build_hierarchy() for parsing hierarchy structure,
+    including nested prefab loading and script name resolution.
+    """
 
     def __init__(self):
         self._raw_doc: Optional[UnityYAMLDocument] = None
-        self._entries_by_id: dict[str, Any] = {}
-        self._guid_resolver = GuidResolver()
-
-    def _get_entry_data(self, entry: Any) -> dict:
-        """Get the data dictionary from a UnityYAMLObject."""
-        if hasattr(entry, "get_content"):
-            return entry.get_content() or {}
-        if hasattr(entry, "data"):
-            # data is like {"GameObject": {...}} - get the inner dict
-            data = entry.data or {}
-            if data and len(data) == 1:
-                return next(iter(data.values()), {})
-            return data
-        return {}
+        self._guid_index: Optional[LazyGUIDIndex] = None
+        self._project_root: Optional[Path] = None
 
     def load(
         self,
         file_path: Path,
         unity_root: Optional[Path] = None,
+        load_nested: bool = True,
+        resolve_guids: bool = True,
     ) -> UnityDocument:
         """
         Load a Unity YAML file and convert to UnityDocument.
@@ -114,123 +76,380 @@ class UnityFileLoader:
         Args:
             file_path: Path to the Unity file (.prefab, .unity, .asset, etc.)
             unity_root: Optional Unity project root for GUID resolution
+            load_nested: If True, load contents of nested prefabs (default True)
+            resolve_guids: If True, build GUID index for script name resolution (slower)
 
         Returns:
             UnityDocument with parsed hierarchy
         """
         self._raw_doc = UnityYAMLDocument.load(str(file_path))
-        self._entries_by_id = {}
 
-        # Find Unity project root and setup GUID resolver
-        # Priority: provided unity_root > auto-detect (non-temp only)
+        # Find Unity project root
         file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
-        project_root = None
-
-        # Use provided unity_root first (reliable)
-        if unity_root:
-            project_root = unity_root
-            logger.info(f"Using provided unity_root: {project_root}")
-        else:
-            # Try auto-detection (may find temp directory - will be validated later)
-            project_root = GuidResolver.find_project_root(file_path_obj)
-            if project_root:
-                logger.debug(f"Auto-detected project root: {project_root}")
+        project_root = unity_root or find_unity_project_root(file_path_obj)
 
         if project_root:
-            logger.info(f"Setting up GUID resolver for project: {project_root}")
-            self._guid_resolver.set_project_root(project_root)
+            logger.debug(f"Using project root: {project_root}")
+            self._project_root = project_root
+            # Use lazy GUID index for fast startup (O(1) init, queries SQLite on-demand)
+            if resolve_guids:
+                self._guid_index = get_lazy_guid_index(project_root)
+            else:
+                self._guid_index = None
         else:
             logger.warning(f"Could not find project root for: {file_path_obj}")
-
-        # Index all entries by their file_id
-        for entry in self._raw_doc.objects:
-            file_id = getattr(entry, "file_id", None)
-            if file_id:
-                self._entries_by_id[str(file_id)] = entry
+            self._project_root = None
+            self._guid_index = None
 
         # Create document
         doc = UnityDocument(file_path=str(file_path))
         doc.project_root = str(project_root) if project_root else None
 
-        # Extract all GameObjects and Components
-        game_objects: dict[str, UnityGameObject] = {}
-        components: dict[str, UnityComponent] = {}
+        # Build hierarchy with script name resolution
+        # unityflow 0.3.0+ uses internal batch resolution for O(1) performance
+        hierarchy = build_hierarchy(
+            self._raw_doc,
+            guid_index=self._guid_index,
+            project_root=self._project_root,
+            load_nested_prefabs=load_nested,
+        )
 
-        for entry in self._raw_doc.objects:
-            file_id = str(getattr(entry, "file_id", ""))
-            raw_class_name = getattr(entry, "class_name", "Unknown")
-            # Resolve Unknown(ID) patterns to actual class names
-            class_name = resolve_class_name(raw_class_name)
+        # Convert unityflow hierarchy to our internal model
+        for root_node in hierarchy.root_objects:
+            root_go = self._convert_hierarchy_node(root_node, None)
+            if root_go:
+                doc.root_objects.append(root_go)
+                self._collect_all_objects(root_go, doc)
 
-            if class_name == "GameObject":
-                go = self._parse_game_object(entry, file_id)
-                game_objects[file_id] = go
-                doc.all_objects[file_id] = go
-
-            elif class_name not in self.SKIP_TYPES:
-                comp = self._parse_component(entry, file_id, class_name)
-                components[file_id] = comp
-                doc.all_components[file_id] = comp
-
-        # Build hierarchy relationships
-        self._build_hierarchy(game_objects, components)
-
-        # Find root objects (those without parents)
-        for go in game_objects.values():
-            if go.parent is None:
-                doc.root_objects.append(go)
+        # Build stripped object -> PrefabInstance mapping for reference resolution
+        self._build_stripped_mapping(doc)
 
         # Sort root objects by name for consistent ordering
         doc.root_objects.sort(key=lambda x: x.name)
 
         return doc
 
-    def _parse_game_object(self, entry: Any, file_id: str) -> UnityGameObject:
-        """Parse a GameObject entry."""
-        data = self._get_entry_data(entry)
-        name = data.get("m_Name", "Unnamed")
-        layer = data.get("m_Layer", 0)
-        tag = data.get("m_TagString", "Untagged")
-        is_active = bool(data.get("m_IsActive", 1))
+    def _build_stripped_mapping(self, doc: UnityDocument) -> None:
+        """Build mapping from stripped objects to their parent PrefabInstances.
 
-        return UnityGameObject(
-            file_id=file_id,
-            name=name,
-            layer=layer,
-            tag=tag,
-            is_active=is_active,
+        This is needed to resolve references that point to stripped components
+        (placeholders for components inside nested prefabs).
+        """
+        if not self._raw_doc:
+            return
+
+        for entry in self._raw_doc.objects:
+            if not entry.stripped:
+                continue
+
+            file_id = str(entry.file_id)
+            # Skip if already in our objects (shouldn't happen for stripped)
+            if file_id in doc.all_objects or file_id in doc.all_components:
+                continue
+
+            # Get the parent PrefabInstance for this stripped object
+            prefab_id = get_prefab_instance_for_stripped(self._raw_doc, entry.file_id)
+            if prefab_id:
+                # Resolve class name (handle Unknown(ID) format)
+                class_name = resolve_class_name(entry.class_name)
+                doc.stripped_to_prefab[file_id] = (str(prefab_id), class_name)
+                logger.debug(f"Mapped stripped {class_name} {file_id} -> PrefabInstance {prefab_id}")
+
+    def _convert_hierarchy_node(
+        self,
+        node: HierarchyNode,
+        parent: Optional[UnityGameObject],
+    ) -> Optional[UnityGameObject]:
+        """Convert a unityflow HierarchyNode to our UnityGameObject.
+
+        For PrefabInstance nodes with loaded nested content, merges the
+        PrefabInstance with its nested root to avoid duplicate display.
+
+        Args:
+            node: The unityflow HierarchyNode to convert
+            parent: The parent UnityGameObject (or None for root)
+
+        Returns:
+            Converted UnityGameObject
+        """
+        # Check if this is a PrefabInstance with loaded nested content
+        # In this case, merge with the nested root to avoid duplicate display
+        nested_root = None
+
+        if node.is_prefab_instance and node.nested_prefab_loaded and node.children:
+            # Find the nested prefab's root (first child that is_from_nested_prefab)
+            for child in node.children:
+                if child.is_from_nested_prefab:
+                    nested_root = child
+                    break
+
+        # Create UnityGameObject from HierarchyNode
+        go = UnityGameObject(
+            file_id=str(node.file_id),
+            name=node.name,
+            parent=parent,
+            is_prefab_instance=node.is_prefab_instance,
+            source_prefab_guid=node.source_guid if node.is_prefab_instance else None,
+            prefab_instance_id=str(node.prefab_instance_id) if node.prefab_instance_id else None,
         )
 
-    def _parse_component(
-        self, entry: Any, file_id: str, class_name: str
+        # Add Transform/RectTransform as first component
+        # unityflow stores transform separately via transform_id, not in node.components
+        transform_comp = self._get_transform_component(node, nested_root)
+        if transform_comp:
+            go.components.append(transform_comp)
+
+        # Collect components - merge if nested root exists
+        components_by_type: dict[str, ComponentInfo] = {}
+
+        # First add nested root's components (original/base)
+        if nested_root:
+            for comp_info in nested_root.components:
+                key = comp_info.script_name or comp_info.class_name
+                components_by_type[key] = comp_info
+
+        # Then add/override with PrefabInstance's components (modifications)
+        for comp_info in node.components:
+            key = comp_info.script_name or comp_info.class_name
+            components_by_type[key] = comp_info
+
+        # Convert components maintaining order (nested root order, then any new from PrefabInstance)
+        seen_keys = set()
+        if nested_root:
+            for comp_info in nested_root.components:
+                key = comp_info.script_name or comp_info.class_name
+                final_comp_info = components_by_type[key]
+                # unityflow 0.3.3+ populates ComponentInfo.modifications automatically
+                comp = self._convert_component_info(final_comp_info)
+                go.components.append(comp)
+                seen_keys.add(key)
+
+        for comp_info in node.components:
+            key = comp_info.script_name or comp_info.class_name
+            if key not in seen_keys:
+                comp = self._convert_component_info(comp_info)
+                go.components.append(comp)
+                seen_keys.add(key)
+
+        # Convert children (unityflow 0.3.4+ sorts by Transform's m_Children order)
+        children_to_convert = nested_root.children if nested_root else node.children
+        for child_node in children_to_convert:
+            child_go = self._convert_hierarchy_node(child_node, go)
+            if child_go:
+                go.children.append(child_go)
+
+        return go
+
+    def _convert_component_info(
+        self,
+        comp_info: ComponentInfo,
     ) -> UnityComponent:
-        """Parse a component entry."""
+        """Convert a unityflow ComponentInfo to our UnityComponent.
+
+        Args:
+            comp_info: The unityflow ComponentInfo to convert
+
+        Returns:
+            Converted UnityComponent
+        """
+        class_name = resolve_class_name(comp_info.class_name)
         comp = UnityComponent(
-            file_id=file_id,
+            file_id=str(comp_info.file_id),
             type_name=class_name,
         )
 
-        data = self._get_entry_data(entry)
+        # Script name is resolved by unityflow 0.3.0+ via batch resolution
+        comp.script_guid = comp_info.script_guid
+        comp.script_name = comp_info.script_name
 
-        # Handle MonoBehaviour special case
-        if class_name == "MonoBehaviour":
-            script_ref = data.get("m_Script")
-            if script_ref:
-                comp.script_guid = self._extract_guid(script_ref)
-                logger.debug(f"MonoBehaviour script_ref: {script_ref}, extracted GUID: {comp.script_guid}")
-                # Try to get script name from data first, then resolve from GUID
-                comp.script_name = self._guess_script_name(data)
-                if not comp.script_name and comp.script_guid:
-                    comp.script_name = self._guid_resolver.resolve(comp.script_guid)
-                    if comp.script_name:
-                        logger.debug(f"Resolved script GUID {comp.script_guid[:8]}... -> {comp.script_name}")
-                    else:
-                        logger.warning(f"Failed to resolve script GUID: {comp.script_guid}")
+        # Apply modifications to component data before extracting properties
+        # unityflow 0.3.3+ populates ComponentInfo.modifications automatically
+        data = comp_info.data
+        if comp_info.modifications:
+            # Deep copy to avoid modifying the original data
+            data = self._apply_modifications(copy.deepcopy(data), comp_info.modifications)
 
         # Extract all properties
         comp.properties = self._extract_properties(data)
 
         return comp
+
+    def _get_transform_component(
+        self,
+        node: HierarchyNode,
+        nested_root: Optional[HierarchyNode],
+    ) -> Optional[UnityComponent]:
+        """Get Transform/RectTransform component from HierarchyNode.
+
+        unityflow stores Transform separately via transform_id, not in components.
+        For nested prefabs, we use the nested_root's transform if available.
+
+        Args:
+            node: The HierarchyNode
+            nested_root: Optional nested prefab root for merging
+
+        Returns:
+            UnityComponent for Transform/RectTransform, or None
+        """
+        # Use nested_root's transform_id if available (for merged prefab instances)
+        source_node = nested_root if nested_root else node
+        transform_id = source_node.transform_id
+
+        if not transform_id:
+            return None
+
+        # Use the node's document (handles nested prefabs correctly)
+        doc = source_node._document if source_node._document else self._raw_doc
+        if not doc:
+            return None
+
+        transform_obj = doc.get_by_file_id(transform_id)
+        if not transform_obj:
+            return None
+
+        # Get class name (Transform or RectTransform)
+        class_name = CLASS_IDS.get(transform_obj.class_id, f"Unknown({transform_obj.class_id})")
+
+        comp = UnityComponent(
+            file_id=str(transform_id),
+            type_name=class_name,
+        )
+
+        # Get transform data and apply modifications if any
+        data = transform_obj.get_content() or {}
+
+        # For nested prefabs, apply modifications targeting the transform
+        if node.is_prefab_instance and node.modifications:
+            # Filter modifications targeting this transform
+            transform_mods = []
+            for mod in node.modifications:
+                target = mod.get("target", {})
+                # Match by fileID in source prefab
+                if target.get("fileID") == source_node.transform_id:
+                    transform_mods.append(mod)
+
+            if transform_mods:
+                data = self._apply_modifications(copy.deepcopy(data), transform_mods)
+
+        comp.properties = self._extract_properties(data)
+
+        return comp
+
+    def _apply_modifications(
+        self,
+        data: dict,
+        modifications: list[dict],
+    ) -> dict:
+        """Apply PrefabInstance modifications to component data.
+
+        Each modification has:
+        - propertyPath: path like "m_LocalPosition.x" or "m_Materials.Array.data[0]"
+        - value: the new value (for simple types)
+        - objectReference: reference value (for object references)
+
+        Args:
+            data: Component data dictionary (will be modified in place)
+            modifications: List of modifications targeting this component
+
+        Returns:
+            Modified data dictionary
+        """
+        for mod in modifications:
+            property_path = mod.get("propertyPath", "")
+            value = mod.get("value")
+            obj_ref = mod.get("objectReference", {})
+
+            if not property_path:
+                continue
+
+            # Parse property path and apply value
+            self._set_nested_value(data, property_path, value, obj_ref)
+
+        return data
+
+    def _set_nested_value(
+        self,
+        data: dict,
+        property_path: str,
+        value: Any,
+        obj_ref: dict,
+    ) -> None:
+        """Set a nested value in a dictionary using Unity property path.
+
+        Handles paths like:
+        - "m_LocalPosition.x"
+        - "m_Materials.Array.data[0]"
+        - "m_Name"
+
+        Args:
+            data: Dictionary to modify
+            property_path: Unity property path
+            value: Value to set (for simple types)
+            obj_ref: Object reference (for reference types)
+        """
+        # Unity property paths use "." for nesting and ".Array.data[N]" for arrays
+        parts = property_path.split(".")
+        current = data
+
+        for i, part in enumerate(parts[:-1]):
+            # Handle array access like "Array" followed by "data[0]"
+            if part == "Array":
+                continue  # Skip "Array", next part will be "data[N]"
+
+            # Handle "data[N]" pattern
+            if part.startswith("data["):
+                idx_str = part[5:-1]  # Extract N from "data[N]"
+                try:
+                    idx = int(idx_str)
+                    if isinstance(current, list) and 0 <= idx < len(current):
+                        current = current[idx]
+                    else:
+                        return  # Index out of range
+                except (ValueError, TypeError):
+                    return
+                continue
+
+            # Regular nested key
+            if isinstance(current, dict):
+                if part not in current:
+                    current[part] = {}
+                current = current[part]
+            else:
+                return  # Cannot traverse further
+
+        # Set the final value
+        final_key = parts[-1]
+
+        # Handle final array index
+        if final_key.startswith("data["):
+            idx_str = final_key[5:-1]
+            try:
+                idx = int(idx_str)
+                if isinstance(current, list) and 0 <= idx < len(current):
+                    # Use object reference if fileID is non-zero, otherwise use value
+                    if obj_ref and obj_ref.get("fileID", 0) != 0:
+                        current[idx] = obj_ref
+                    else:
+                        current[idx] = value
+            except (ValueError, TypeError):
+                pass
+            return
+
+        # Regular final key
+        if isinstance(current, dict):
+            # Use object reference if fileID is non-zero, otherwise use value
+            if obj_ref and obj_ref.get("fileID", 0) != 0:
+                current[final_key] = obj_ref
+            else:
+                current[final_key] = value
+
+    def _collect_all_objects(self, go: UnityGameObject, doc: UnityDocument) -> None:
+        """Recursively collect all GameObjects and Components into doc's lookup dicts."""
+        doc.all_objects[go.file_id] = go
+        for comp in go.components:
+            doc.all_components[comp.file_id] = comp
+        for child in go.children:
+            self._collect_all_objects(child, doc)
 
     def _extract_properties(
         self, data: dict, prefix: str = ""
@@ -269,82 +488,12 @@ class UnityFileLoader:
             # Complex object - try to get a reasonable representation
             return UnityProperty(name=name, value=str(value), path=path)
 
-    def _extract_guid(self, script_ref: Any) -> Optional[str]:
-        """Extract GUID from a script reference."""
-        if isinstance(script_ref, dict):
-            return script_ref.get("guid")
-        return None
-
-    def _guess_script_name(self, data: dict) -> Optional[str]:
-        """Try to guess the script name from entry data."""
-        # Some common patterns for script identification
-        for attr in ["m_Name", "m_ClassName", "m_ScriptName"]:
-            name = data.get(attr)
-            if name and isinstance(name, str):
-                return name
-        return None
-
-    def _build_hierarchy(
-        self,
-        game_objects: dict[str, UnityGameObject],
-        components: dict[str, UnityComponent],
-    ) -> None:
-        """Build parent-child relationships and attach components."""
-        # First pass: attach components to GameObjects
-        for comp_id, comp in components.items():
-            entry = self._entries_by_id.get(comp_id)
-            if not entry:
-                continue
-
-            # Find the GameObject this component belongs to
-            data = self._get_entry_data(entry)
-            go_ref = data.get("m_GameObject")
-            if go_ref and isinstance(go_ref, dict):
-                go_id = str(go_ref.get("fileID", ""))
-                if go_id in game_objects:
-                    game_objects[go_id].components.append(comp)
-
-        # Build Transform ID -> GameObject index for O(1) lookup
-        # This avoids O(n²) complexity when building hierarchy
-        transform_to_go: dict[str, UnityGameObject] = {}
-        for go in game_objects.values():
-            transform = go.get_transform()
-            if transform:
-                transform_to_go[transform.file_id] = go
-
-        # Second pass: build Transform hierarchy using m_Father only
-        # (Using m_Father is sufficient and avoids duplicate children)
-        for go_id, go in game_objects.items():
-            transform = go.get_transform()
-            if not transform:
-                continue
-
-            # Find transform entry in raw data
-            transform_entry = self._entries_by_id.get(transform.file_id)
-            if not transform_entry:
-                continue
-
-            transform_data = self._get_entry_data(transform_entry)
-
-            # Get parent transform via m_Father
-            father_ref = transform_data.get("m_Father")
-            if father_ref and isinstance(father_ref, dict):
-                father_id = str(father_ref.get("fileID", ""))
-                if father_id and father_id != "0":
-                    # O(1) lookup using index instead of O(n) search
-                    parent_go = transform_to_go.get(father_id)
-                    if parent_go and go not in parent_go.children:
-                        go.parent = parent_go
-                        parent_go.children.append(go)
-
-        # Sort children by name for consistent ordering
-        for go in game_objects.values():
-            go.children.sort(key=lambda x: x.name)
-
 
 def load_unity_file(
     file_path: Path,
     unity_root: Optional[Path] = None,
+    load_nested: bool = True,
+    resolve_guids: bool = True,
 ) -> UnityDocument:
     """
     Convenience function to load a Unity file.
@@ -352,9 +501,16 @@ def load_unity_file(
     Args:
         file_path: Path to the Unity file
         unity_root: Optional Unity project root for GUID resolution
+        load_nested: If True, load contents of nested prefabs (default True)
+        resolve_guids: If True, build GUID index for script name resolution (slower)
 
     Returns:
         UnityDocument with parsed hierarchy
     """
     loader = UnityFileLoader()
-    return loader.load(file_path, unity_root=unity_root)
+    return loader.load(
+        file_path,
+        unity_root=unity_root,
+        load_nested=load_nested,
+        resolve_guids=resolve_guids,
+    )

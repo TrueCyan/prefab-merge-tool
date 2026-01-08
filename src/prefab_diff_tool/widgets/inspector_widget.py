@@ -856,6 +856,12 @@ class ReferenceFieldWidget(QWidget):
                 # Component found but no owner
                 return f"({comp_name})"
 
+            # Check if it's a stripped object (reference to component inside nested prefab)
+            result = self._document.resolve_stripped_reference(file_id_str)
+            if result:
+                prefab, class_name = result
+                return f"{prefab.name} ({class_name})"
+
         # Fallback
         return f"(ID: {file_id})"
 
@@ -931,7 +937,15 @@ class ReferenceFieldWidget(QWidget):
             # External reference
             self.external_reference_clicked.emit(guid)
         else:
-            # Internal reference
+            # Internal reference - check if it's a stripped object
+            if self._document:
+                result = self._document.resolve_stripped_reference(file_id)
+                if result:
+                    # Navigate to the PrefabInstance instead
+                    prefab, _ = result
+                    self.reference_clicked.emit(prefab.file_id, "")
+                    return
+            # Regular internal reference
             self.reference_clicked.emit(file_id, guid)
 
 
