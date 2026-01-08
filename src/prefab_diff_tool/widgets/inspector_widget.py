@@ -881,12 +881,14 @@ class ReferenceFieldWidget(QWidget):
         file_id = value.get("fileID", 0)
         guid = value.get("guid", "")
         display = self._resolve_reference(value)
+        print(f"[DEBUG] ReferenceFieldWidget._setup_ui: file_id={file_id}, guid={guid!r}, display={display}")
 
         # Create clickable button for non-None references
         if file_id != 0:
             ref_btn = QPushButton(display)
             ref_btn.setFlat(True)
             ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            print(f"[DEBUG]   Created button for: {display}")
 
             if is_modified:
                 ref_btn.setStyleSheet(
