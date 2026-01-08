@@ -5,7 +5,10 @@ Displays components and their properties in a collapsible, hierarchical view
 similar to Unity's Inspector window.
 """
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -930,11 +933,15 @@ class ReferenceFieldWidget(QWidget):
 
     def _on_click(self, value: dict) -> None:
         """Handle click on reference."""
+        logger.debug(f"ReferenceFieldWidget._on_click called with value={value}")
         file_id = str(value.get("fileID", 0))
-        guid = value.get("guid", "")
+        # Handle None guid (can happen if YAML has 'guid: null')
+        guid = value.get("guid") or ""
+        logger.debug(f"  file_id={file_id}, guid={guid!r}")
 
         if guid:
             # External reference
+            logger.debug(f"  Emitting external_reference_clicked with guid={guid}")
             self.external_reference_clicked.emit(guid)
         else:
             # Internal reference - check if it's a stripped object
@@ -943,9 +950,11 @@ class ReferenceFieldWidget(QWidget):
                 if result:
                     # Navigate to the PrefabInstance instead
                     prefab, _ = result
+                    logger.debug(f"  Emitting reference_clicked for stripped object: {prefab.file_id}")
                     self.reference_clicked.emit(prefab.file_id, "")
                     return
             # Regular internal reference
+            logger.debug(f"  Emitting reference_clicked with file_id={file_id}")
             self.reference_clicked.emit(file_id, guid)
 
 
