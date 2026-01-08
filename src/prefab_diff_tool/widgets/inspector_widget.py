@@ -49,6 +49,7 @@ SKIP_PROPERTIES_NORMAL = {
     "m_EditorHideFlags",
     "m_EditorClassIdentifier",
     "m_GameObject",  # Reference to parent GameObject - not shown in Unity Inspector
+    "m_Name",  # Component m_Name is always empty - not shown in Unity Inspector
 }
 
 # Additional properties to skip for Transform components in Normal mode
