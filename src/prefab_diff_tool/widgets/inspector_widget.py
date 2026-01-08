@@ -5,7 +5,10 @@ Displays components and their properties in a collapsible, hierarchical view
 similar to Unity's Inspector window.
 """
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -901,7 +904,8 @@ class ReferenceFieldWidget(QWidget):
                     "QPushButton:hover { background-color: #4a4a4a; text-decoration: underline; }"
                 )
 
-            ref_btn.clicked.connect(lambda: self._on_click(value))
+            # Use default argument to capture value immediately (avoid late binding)
+            ref_btn.clicked.connect(lambda checked=False, v=value: self._on_click(v))
             layout.addWidget(ref_btn, 1)
         else:
             # None reference - just show label
@@ -931,7 +935,8 @@ class ReferenceFieldWidget(QWidget):
     def _on_click(self, value: dict) -> None:
         """Handle click on reference."""
         file_id = str(value.get("fileID", 0))
-        guid = value.get("guid", "")
+        # Handle None guid (can happen if YAML has 'guid: null')
+        guid = value.get("guid") or ""
 
         if guid:
             # External reference
@@ -1628,6 +1633,9 @@ class InspectorWidget(QScrollArea):
                 document=self._document,
                 guid_resolver=self._guid_resolver,
             )
+            # Forward reference signals to InspectorWidget
+            widget.reference_clicked.connect(self.reference_clicked)
+            widget.external_reference_clicked.connect(self.external_reference_clicked)
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
