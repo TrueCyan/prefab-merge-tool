@@ -302,10 +302,15 @@ class UnityFileLoader:
         source_node = nested_root if nested_root else node
         transform_id = source_node.transform_id
 
-        if not transform_id or not self._raw_doc:
+        if not transform_id:
             return None
 
-        transform_obj = self._raw_doc.get_by_file_id(transform_id)
+        # Use the node's document (handles nested prefabs correctly)
+        doc = source_node._document if source_node._document else self._raw_doc
+        if not doc:
+            return None
+
+        transform_obj = doc.get_by_file_id(transform_id)
         if not transform_obj:
             return None
 
