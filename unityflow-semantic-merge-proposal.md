@@ -1,6 +1,10 @@
-# Unityflow 시맨틱 머지 기능 제안
+# Unityflow 시맨틱 Diff/Merge 기능 제안
 
 ## 현재 상황 분석
+
+### unityflow의 현재 상태
+- **diff 기능**: 없음 (텍스트 diff만 가능)
+- **merge 기능**: `merge.py`에 텍스트 라인 기반 구현
 
 ### unityflow의 현재 merge.py
 - **텍스트 라인 기반** diff3 알고리즘
@@ -25,9 +29,124 @@ def three_way_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
 
 ---
 
-## 제안: 시맨틱 머지 API
+## 제안 1: 시맨틱 Diff API (2-way 비교)
 
-### 1. PropertyConflict 데이터 클래스
+### PropertyChange 데이터 클래스
+
+```python
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Optional
+
+class ChangeType(Enum):
+    ADDED = "added"
+    REMOVED = "removed"
+    MODIFIED = "modified"
+
+@dataclass
+class PropertyChange:
+    """속성 레벨 변경 정보"""
+
+    # 위치 정보
+    game_object_path: str      # "Player/Body/Weapon"
+    component_type: str        # "Transform", "MonoBehaviour" 등
+    component_file_id: int     # 컴포넌트의 fileID
+    property_path: str         # "m_LocalPosition.x"
+
+    # 변경 정보
+    change_type: ChangeType
+    old_value: Optional[Any]   # left 값 (REMOVED, MODIFIED)
+    new_value: Optional[Any]   # right 값 (ADDED, MODIFIED)
+
+    @property
+    def full_path(self) -> str:
+        return f"{self.game_object_path}.{self.component_type}.{self.property_path}"
+```
+
+### SemanticDiffResult 데이터 클래스
+
+```python
+@dataclass
+class SemanticDiffResult:
+    """시맨틱 diff 결과"""
+
+    left_doc: UnityYAMLDocument
+    right_doc: UnityYAMLDocument
+
+    # 변경 목록
+    changes: list[PropertyChange]
+
+    # 요약
+    added_count: int
+    removed_count: int
+    modified_count: int
+
+    @property
+    def total_changes(self) -> int:
+        return self.added_count + self.removed_count + self.modified_count
+
+    @property
+    def has_changes(self) -> bool:
+        return self.total_changes > 0
+```
+
+### semantic_diff() 함수
+
+```python
+def semantic_diff(
+    left_doc: UnityYAMLDocument,
+    right_doc: UnityYAMLDocument,
+    *,
+    ignore_order: bool = True,        # 배열 순서 무시
+    flatten_properties: bool = True,  # 중첩 속성 펼치기 (m_LocalPosition.x)
+) -> SemanticDiffResult:
+    """
+    시맨틱 2-way diff 수행
+
+    Args:
+        left_doc: 이전 버전 문서
+        right_doc: 새 버전 문서
+        ignore_order: 배열 순서 변경 무시
+        flatten_properties: 중첩 dict를 개별 속성으로 펼침
+
+    Returns:
+        SemanticDiffResult: diff 결과
+    """
+    pass
+```
+
+### 사용 예시
+
+```python
+from unityflow import UnityYAMLDocument
+from unityflow.diff import semantic_diff
+
+# 문서 로드
+old_doc = UnityYAMLDocument.load("old_version.prefab")
+new_doc = UnityYAMLDocument.load("new_version.prefab")
+
+# 시맨틱 diff 수행
+result = semantic_diff(old_doc, new_doc)
+
+print(f"변경사항 {result.total_changes}개:")
+print(f"  추가: {result.added_count}")
+print(f"  삭제: {result.removed_count}")
+print(f"  수정: {result.modified_count}")
+
+for change in result.changes:
+    if change.change_type == ChangeType.MODIFIED:
+        print(f"  {change.full_path}: {change.old_value} → {change.new_value}")
+    elif change.change_type == ChangeType.ADDED:
+        print(f"  + {change.full_path}: {change.new_value}")
+    elif change.change_type == ChangeType.REMOVED:
+        print(f"  - {change.full_path}: {change.old_value}")
+```
+
+---
+
+## 제안 2: 시맨틱 Merge API (3-way 비교)
+
+### PropertyConflict 데이터 클래스
 
 ```python
 from dataclasses import dataclass
@@ -266,21 +385,59 @@ result.merged_document.save("merged.prefab")
 
 ### 변경이 필요한 파일
 
-1. **merge_view.py**
+1. **diff_view.py**
+   - `_perform_diff()` → `semantic_diff()` 호출로 대체
+   - 반환된 `PropertyChange` 리스트를 UI에 표시
+
+2. **merge_view.py**
    - `_perform_merge()` → `semantic_three_way_merge()` 호출로 대체
    - 반환된 `PropertyConflict` 리스트를 그대로 UI에 표시
 
-2. **writer.py**
+3. **writer.py**
    - `write_text_merge()` → `semantic merge` 결과 문서 저장으로 대체
    - `_apply_text_resolutions()` 불필요 (이미 문서에 적용됨)
 
 ### 통합 코드 예시
 
 ```python
+# diff_view.py 수정
+def _perform_diff(self) -> None:
+    """시맨틱 2-way diff 수행"""
+    from unityflow.diff import semantic_diff
+
+    result = semantic_diff(
+        self._left_raw_doc,
+        self._right_raw_doc,
+    )
+
+    # PropertyChange → Change 변환
+    self._changes = [
+        Change(
+            path=c.full_path,
+            status=DiffStatus(c.change_type.value),
+            left_value=c.old_value,
+            right_value=c.new_value,
+        )
+        for c in result.changes
+    ]
+
+    self._diff_result = DiffResult(
+        left=self._left_doc,
+        right=self._right_doc,
+        changes=self._changes,
+        summary=DiffSummary(
+            added_objects=result.added_count,
+            removed_objects=result.removed_count,
+            modified_properties=result.modified_count,
+        ),
+    )
+```
+
+```python
 # merge_view.py 수정
 def _perform_merge(self) -> None:
     """시맨틱 3-way 머지 수행"""
-    from unityflow.semantic_merge import semantic_three_way_merge
+    from unityflow.merge import semantic_three_way_merge
 
     result = semantic_three_way_merge(
         self._base_raw_doc,
@@ -309,12 +466,20 @@ def _perform_merge(self) -> None:
 
 ## 우선순위
 
-1. **High**: `PropertyConflict` 및 `SemanticMergeResult` 데이터 클래스
-2. **High**: `semantic_three_way_merge()` 기본 구현
-3. **Medium**: 배열 순서 무시 옵션 (`m_Children`, `m_Materials` 등)
-4. **Medium**: `apply_resolution()` 함수
-5. **Low**: 중첩 프리팹(PrefabInstance) 특수 처리
-6. **Low**: MonoBehaviour 커스텀 속성 처리
+### Phase 1: 기본 구현
+1. **High**: `PropertyChange`, `PropertyConflict` 데이터 클래스
+2. **High**: `semantic_diff()` 기본 구현 (2-way)
+3. **High**: `semantic_three_way_merge()` 기본 구현 (3-way)
+
+### Phase 2: 옵션 및 개선
+4. **Medium**: 배열 순서 무시 옵션 (`m_Children`, `m_Materials` 등)
+5. **Medium**: 속성 펼치기 옵션 (`m_LocalPosition` → `m_LocalPosition.x/y/z`)
+6. **Medium**: `apply_resolution()` 함수
+
+### Phase 3: 특수 케이스
+7. **Low**: 중첩 프리팹(PrefabInstance) `m_Modifications` 처리
+8. **Low**: MonoBehaviour 커스텀 속성 처리
+9. **Low**: file_id 불일치 시 fallback 매칭 (type + name)
 
 ---
 
