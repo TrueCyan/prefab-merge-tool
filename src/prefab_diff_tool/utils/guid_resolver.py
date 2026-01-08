@@ -341,7 +341,11 @@ class GuidResolver:
         if not self._ensure_db_exists():
             return None
 
-        return self._query_db(guid)
+        path = self._query_db(guid)
+        # DB stores relative paths - convert to absolute using project root
+        if path and self._project_root and not path.is_absolute():
+            path = self._project_root / path
+        return path
 
     def resolve_with_type(self, guid: str) -> tuple[Optional[str], Optional[str]]:
         """
