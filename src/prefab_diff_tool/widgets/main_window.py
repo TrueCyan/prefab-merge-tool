@@ -185,10 +185,6 @@ class MainWindow(QMainWindow):
         log_action.triggered.connect(self._on_show_logs)
         help_menu.addAction(log_action)
 
-        debug_action = QAction("디버그 정보(&D)...", self)
-        debug_action.triggered.connect(self._on_debug_info)
-        help_menu.addAction(debug_action)
-
         help_menu.addSeparator()
 
         about_action = QAction("정보(&A)...", self)
@@ -575,51 +571,6 @@ class MainWindow(QMainWindow):
     def _on_log_viewer_closed(self) -> None:
         """Handle log viewer being closed."""
         self._log_viewer = None
-
-    def _on_debug_info(self) -> None:
-        """Show debug information dialog."""
-        from prefab_diff_tool.utils.vcs_detector import get_vcs_info
-
-        vcs_info = get_vcs_info()
-
-        # Extract project name from temp file path (for debugging)
-        extracted_project = None
-        for f in self._current_files:
-            path_str = str(f).replace("\\", "/")
-            if "/p4v/" in path_str.lower():
-                parts = path_str.split("/")
-                try:
-                    assets_idx = next(i for i, p in enumerate(parts) if p == "Assets")
-                    if assets_idx > 0:
-                        extracted_project = parts[assets_idx - 1]
-                        break
-                except StopIteration:
-                    pass
-
-        info_text = f"""<h3>디버그 정보</h3>
-<h4>CLI 인자</h4>
-<pre>--workspace-root: {self._workspace_root}</pre>
-
-<h4>P4V 임시파일 분석</h4>
-<pre>추출된 프로젝트명: {extracted_project or '(없음)'}</pre>
-
-<h4>Unity 프로젝트</h4>
-<pre>unity_root: {self._unity_root}</pre>
-
-<h4>현재 파일</h4>
-<pre>{chr(10).join(str(f) for f in self._current_files) or '(없음)'}</pre>
-
-<h4>Git</h4>
-<pre>GIT_WORK_TREE: {vcs_info['git']['GIT_WORK_TREE']}
-GIT_DIR: {vcs_info['git']['GIT_DIR']}
-detected: {vcs_info['git']['detected_workspace']}</pre>
-
-<h4>Perforce</h4>
-<pre>P4ROOT: {vcs_info['perforce']['P4ROOT']}
-P4CLIENT: {vcs_info['perforce']['P4CLIENT']}
-detected: {vcs_info['perforce']['detected_workspace']}</pre>
-"""
-        QMessageBox.information(self, "디버그 정보", info_text)
 
     # === Signal handlers ===
     
