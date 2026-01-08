@@ -35,6 +35,7 @@ from prefab_diff_tool.core.unity_model import (
 )
 from prefab_diff_tool.core.writer import perform_text_merge
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
+from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
     FileLoadingWorker,
     LoadingProgressWidget,
@@ -87,7 +88,7 @@ class MergeView(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Setup the UI layout."""
+        """Setup the UI layout - same structure as DiffView with Inspector."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -105,38 +106,112 @@ class MergeView(QWidget):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Main vertical splitter
+        # Main vertical splitter (top: hierarchy+inspector, bottom: conflicts)
         main_splitter = QSplitter()
         main_splitter.setOrientation(Qt.Orientation.Vertical)
         content_layout.addWidget(main_splitter)
 
-        # Top: 3-way comparison
-        top_widget = QWidget()
-        top_layout = QHBoxLayout(top_widget)
-        top_layout.setContentsMargins(4, 4, 4, 4)
-        top_layout.setSpacing(4)
+        # Top section: Horizontal splitter (hierarchy | inspector)
+        top_splitter = QSplitter()
+        top_splitter.setOrientation(Qt.Orientation.Horizontal)
 
-        # BASE panel
-        self._base_panel, self._base_tree = self._create_panel("BASE (공통 조상)")
+        # Left side: Hierarchy section with 3 trees
+        hierarchy_container = QWidget()
+        hierarchy_layout = QVBoxLayout(hierarchy_container)
+        hierarchy_layout.setContentsMargins(4, 4, 4, 4)
+
+        hierarchy_label = QLabel("Hierarchy")
+        hierarchy_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        hierarchy_label.setFixedHeight(20)
+        hierarchy_layout.addWidget(hierarchy_label)
+
+        # Three-way tree splitter (BASE | OURS | THEIRS)
+        tree_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # BASE tree
+        base_tree_container = QWidget()
+        base_tree_layout = QVBoxLayout(base_tree_container)
+        base_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._base_label = QLabel("BASE (공통 조상)")
+        self._base_label.setStyleSheet("color: #888; font-size: 11px;")
+        base_tree_layout.addWidget(self._base_label)
+
+        self._base_tree = QTreeView()
+        self._base_tree.setHeaderHidden(True)
         self._base_tree.setModel(self._base_model)
+        self._base_tree.setIndentation(16)
         self._base_tree.clicked.connect(self._on_base_tree_clicked)
-        top_layout.addWidget(self._base_panel)
+        base_tree_layout.addWidget(self._base_tree)
 
-        # OURS panel
-        self._ours_panel, self._ours_tree = self._create_panel("OURS (내 변경)")
+        tree_splitter.addWidget(base_tree_container)
+
+        # OURS tree
+        ours_tree_container = QWidget()
+        ours_tree_layout = QVBoxLayout(ours_tree_container)
+        ours_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._ours_label = QLabel("OURS (내 변경)")
+        self._ours_label.setStyleSheet("color: #888; font-size: 11px;")
+        ours_tree_layout.addWidget(self._ours_label)
+
+        self._ours_tree = QTreeView()
+        self._ours_tree.setHeaderHidden(True)
         self._ours_tree.setModel(self._ours_model)
+        self._ours_tree.setIndentation(16)
         self._ours_tree.clicked.connect(self._on_ours_tree_clicked)
-        top_layout.addWidget(self._ours_panel)
+        ours_tree_layout.addWidget(self._ours_tree)
 
-        # THEIRS panel
-        self._theirs_panel, self._theirs_tree = self._create_panel("THEIRS (상대 변경)")
+        tree_splitter.addWidget(ours_tree_container)
+
+        # THEIRS tree
+        theirs_tree_container = QWidget()
+        theirs_tree_layout = QVBoxLayout(theirs_tree_container)
+        theirs_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._theirs_label = QLabel("THEIRS (상대 변경)")
+        self._theirs_label.setStyleSheet("color: #888; font-size: 11px;")
+        theirs_tree_layout.addWidget(self._theirs_label)
+
+        self._theirs_tree = QTreeView()
+        self._theirs_tree.setHeaderHidden(True)
         self._theirs_tree.setModel(self._theirs_model)
+        self._theirs_tree.setIndentation(16)
         self._theirs_tree.clicked.connect(self._on_theirs_tree_clicked)
-        top_layout.addWidget(self._theirs_panel)
+        theirs_tree_layout.addWidget(self._theirs_tree)
 
-        main_splitter.addWidget(top_widget)
+        tree_splitter.addWidget(theirs_tree_container)
 
-        # Bottom: Result and conflict resolution
+        # Synchronize scrolling between all three trees
+        self._sync_scroll_enabled = True
+        self._base_tree.verticalScrollBar().valueChanged.connect(self._on_base_scroll)
+        self._ours_tree.verticalScrollBar().valueChanged.connect(self._on_ours_scroll)
+        self._theirs_tree.verticalScrollBar().valueChanged.connect(self._on_theirs_scroll)
+
+        hierarchy_layout.addWidget(tree_splitter)
+        top_splitter.addWidget(hierarchy_container)
+
+        # Right side: Inspector panel
+        inspector_container = QWidget()
+        inspector_layout = QVBoxLayout(inspector_container)
+        inspector_layout.setContentsMargins(4, 4, 4, 4)
+
+        inspector_label = QLabel("Inspector")
+        inspector_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        inspector_label.setFixedHeight(20)
+        inspector_layout.addWidget(inspector_label)
+
+        self._inspector = InspectorWidget()
+        inspector_layout.addWidget(self._inspector)
+
+        top_splitter.addWidget(inspector_container)
+
+        # Set initial splitter sizes (50% hierarchy, 50% inspector)
+        top_splitter.setSizes([500, 500])
+
+        main_splitter.addWidget(top_splitter)
+
+        # Bottom: Conflict resolution section
         bottom_widget = QWidget()
         bottom_layout = QVBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(4, 4, 4, 4)
@@ -195,8 +270,8 @@ class MergeView(QWidget):
 
         main_splitter.addWidget(bottom_widget)
 
-        # Set initial sizes (60% top, 40% bottom)
-        main_splitter.setSizes([600, 400])
+        # Set initial sizes (70% top, 30% bottom)
+        main_splitter.setSizes([700, 300])
 
         # Add content widget to stack
         self._stack.addWidget(content_widget)
@@ -204,23 +279,29 @@ class MergeView(QWidget):
         # Show content by default
         self._stack.setCurrentIndex(1)
 
-    def _create_panel(self, title: str) -> tuple[QFrame, QTreeView]:
-        """Create a panel for BASE/OURS/THEIRS."""
-        frame = QFrame()
-        frame.setFrameStyle(QFrame.Shape.StyledPanel)
+    def _on_base_scroll(self, value: int) -> None:
+        """Sync other trees when base tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._ours_tree.verticalScrollBar().setValue(value)
+            self._theirs_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(4, 4, 4, 4)
+    def _on_ours_scroll(self, value: int) -> None:
+        """Sync other trees when ours tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._base_tree.verticalScrollBar().setValue(value)
+            self._theirs_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
-        label = QLabel(title)
-        label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(label)
-
-        tree = QTreeView()
-        tree.setHeaderHidden(True)
-        layout.addWidget(tree)
-
-        return frame, tree
+    def _on_theirs_scroll(self, value: int) -> None:
+        """Sync other trees when theirs tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._base_tree.verticalScrollBar().setValue(value)
+            self._ours_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
     def load_merge(self, base: Path, ours: Path, theirs: Path) -> None:
         """Load files for 3-way merge asynchronously."""
@@ -278,6 +359,9 @@ class MergeView(QWidget):
             self._base_model.set_document(self._base_doc)
             self._ours_model.set_document(self._ours_doc)
             self._theirs_model.set_document(self._theirs_doc)
+
+            # Set document for Inspector (use ours as primary)
+            self._inspector.set_document(self._ours_doc)
 
             # Expand trees
             self._base_tree.expandAll()
@@ -564,7 +648,7 @@ class MergeView(QWidget):
         self._sync_tree_selection(index, "theirs")
 
     def _sync_tree_selection(self, index, source: str) -> None:
-        """Sync selection across all three trees."""
+        """Sync selection across all three trees and update Inspector."""
         data = index.data(Qt.ItemDataRole.UserRole)
         if not data or not hasattr(data, "file_id"):
             return
@@ -589,6 +673,26 @@ class MergeView(QWidget):
             if idx.isValid():
                 self._theirs_tree.setCurrentIndex(idx)
                 self._theirs_tree.scrollTo(idx)
+
+        # Update Inspector with the selected object
+        # Show OURS version as main, with BASE for comparison
+        if isinstance(data, UnityGameObject):
+            ours_obj = self._ours_doc.get_object(file_id) if self._ours_doc else None
+            base_obj = self._base_doc.get_object(file_id) if self._base_doc else None
+
+            if ours_obj:
+                self._inspector.set_document(self._ours_doc)
+                self._inspector.set_game_object(ours_obj, base_obj)
+            elif base_obj:
+                # Object only exists in base (deleted in ours)
+                self._inspector.set_document(self._base_doc)
+                self._inspector.set_game_object(base_obj, None)
+            else:
+                # Check theirs
+                theirs_obj = self._theirs_doc.get_object(file_id) if self._theirs_doc else None
+                if theirs_obj:
+                    self._inspector.set_document(self._theirs_doc)
+                    self._inspector.set_game_object(theirs_obj, None)
 
     def _on_conflict_row_clicked(self, row: int, col: int) -> None:
         """Handle conflict table row click."""
