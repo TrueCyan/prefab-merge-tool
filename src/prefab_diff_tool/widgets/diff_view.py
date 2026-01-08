@@ -582,14 +582,10 @@ class DiffView(QWidget):
 
     def _on_external_reference_clicked(self, guid: str) -> None:
         """Handle external reference click - open file explorer to show the asset."""
-        logger.info(f"External reference clicked: guid={guid}")
-
         if not guid:
-            logger.warning("No GUID provided")
             return
 
         if not self._guid_resolver:
-            logger.warning("No GUID resolver available")
             QMessageBox.warning(
                 self,
                 "에셋을 열 수 없음",
@@ -599,10 +595,8 @@ class DiffView(QWidget):
 
         # Resolve GUID to file path
         asset_path = self._guid_resolver.resolve_path(guid)
-        logger.info(f"Resolved path: {asset_path}")
 
         if not asset_path:
-            logger.warning(f"Could not resolve GUID {guid} to path")
             QMessageBox.warning(
                 self,
                 "에셋을 열 수 없음",
@@ -614,7 +608,6 @@ class DiffView(QWidget):
             return
 
         if not asset_path.exists():
-            logger.warning(f"Path does not exist: {asset_path}")
             QMessageBox.warning(
                 self,
                 "에셋을 열 수 없음",
@@ -623,7 +616,6 @@ class DiffView(QWidget):
             return
 
         # Open file explorer and select the file
-        logger.info(f"Opening file explorer for: {asset_path}")
         self._show_in_file_explorer(asset_path)
 
     def _show_in_file_explorer(self, path: Path) -> None:
