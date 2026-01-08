@@ -231,74 +231,14 @@ class UnityFileLoader:
                 go.components.append(comp)
                 seen_keys.add(key)
 
-        # Convert children in correct order based on Transform's m_Children
+        # Convert children (unityflow 0.3.4+ sorts by Transform's m_Children order)
         children_to_convert = nested_root.children if nested_root else node.children
-        sorted_children = self._get_sorted_children(node, nested_root, children_to_convert)
-
-        for child_node in sorted_children:
+        for child_node in children_to_convert:
             child_go = self._convert_hierarchy_node(child_node, go)
             if child_go:
                 go.children.append(child_go)
 
         return go
-
-    def _get_sorted_children(
-        self,
-        node: HierarchyNode,
-        nested_root: Optional[HierarchyNode],
-        children: list[HierarchyNode],
-    ) -> list[HierarchyNode]:
-        """Sort children based on Transform's m_Children order.
-
-        Unity stores child order in the m_Children array of the Transform component.
-        This ensures children are displayed in the same order as in Unity Editor.
-
-        Args:
-            node: The parent HierarchyNode
-            nested_root: Optional nested prefab root
-            children: List of child nodes to sort
-
-        Returns:
-            Sorted list of children
-        """
-        if not children:
-            return children
-
-        # Get the transform that contains the m_Children order
-        source_node = nested_root if nested_root else node
-        transform_id = source_node.transform_id
-
-        if not transform_id:
-            return children
-
-        # Get the document for this node
-        doc = source_node._document if source_node._document else self._raw_doc
-        if not doc:
-            return children
-
-        transform_obj = doc.get_by_file_id(transform_id)
-        if not transform_obj:
-            return children
-
-        transform_data = transform_obj.get_content() or {}
-        m_children = transform_data.get("m_Children", [])
-
-        if not m_children:
-            return children
-
-        # Build order map: transform_id -> index
-        order_map: dict[int, int] = {}
-        for idx, child_ref in enumerate(m_children):
-            if isinstance(child_ref, dict):
-                child_transform_id = child_ref.get("fileID", 0)
-                if child_transform_id:
-                    order_map[child_transform_id] = idx
-
-        # Sort children based on their transform_id's position in m_Children
-        def sort_key(child: HierarchyNode) -> int:
-            return order_map.get(child.transform_id, len(m_children))
-
-        return sorted(children, key=sort_key)
 
     def _convert_component_info(
         self,
