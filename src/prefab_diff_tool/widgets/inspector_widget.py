@@ -1628,6 +1628,9 @@ class InspectorWidget(QScrollArea):
                 document=self._document,
                 guid_resolver=self._guid_resolver,
             )
+            # Forward reference signals to InspectorWidget
+            widget.reference_clicked.connect(self.reference_clicked)
+            widget.external_reference_clicked.connect(self.external_reference_clicked)
             self._content_layout.addWidget(widget)
             self._component_widgets.append(widget)
 
