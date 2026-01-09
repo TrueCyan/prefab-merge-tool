@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from unityflow import UnityYAMLDocument
-from unityflow.semantic_merge import semantic_three_way_merge, apply_resolution
+from unityflow.semantic_merge import apply_resolution, semantic_three_way_merge
 
 from prefab_diff_tool.core.unity_model import (
     ConflictResolution,
@@ -38,14 +38,14 @@ from prefab_diff_tool.core.unity_model import (
     UnityGameObject,
 )
 from prefab_diff_tool.core.writer import perform_text_merge
-
-logger = logging.getLogger(__name__)
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
     FileLoadingWorker,
     LoadingProgressWidget,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MergeView(QWidget):
