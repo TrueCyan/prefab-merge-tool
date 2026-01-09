@@ -248,7 +248,8 @@ class MergeConflict:
     theirs_value: Optional[Any] = None
     resolution: ConflictResolution = ConflictResolution.UNRESOLVED
     resolved_value: Optional[Any] = None
-    
+    file_id: Optional[str] = None  # Component/object file_id for semantic tracking
+
     @property
     def is_resolved(self) -> bool:
         return self.resolution != ConflictResolution.UNRESOLVED

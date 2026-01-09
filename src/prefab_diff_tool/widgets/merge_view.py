@@ -2,6 +2,7 @@
 3-way merge view widget.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from unityflow import UnityYAMLDocument
+from unityflow.semantic_merge import semantic_three_way_merge, apply_resolution
+
 from prefab_diff_tool.core.unity_model import (
     ConflictResolution,
     DiffStatus,
@@ -34,6 +38,8 @@ from prefab_diff_tool.core.unity_model import (
     UnityGameObject,
 )
 from prefab_diff_tool.core.writer import perform_text_merge
+
+logger = logging.getLogger(__name__)
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
@@ -70,6 +76,13 @@ class MergeView(QWidget):
         self._base_doc: Optional[UnityDocument] = None
         self._ours_doc: Optional[UnityDocument] = None
         self._theirs_doc: Optional[UnityDocument] = None
+
+        # Raw UnityYAMLDocument for semantic merge
+        self._base_raw: Optional[UnityYAMLDocument] = None
+        self._ours_raw: Optional[UnityYAMLDocument] = None
+        self._theirs_raw: Optional[UnityYAMLDocument] = None
+        self._merged_raw: Optional[UnityYAMLDocument] = None
+        self._semantic_conflicts: list = []  # unityflow PropertyConflict objects
 
         self._merge_result: Optional[MergeResult] = None
         self._conflicts: list[MergeConflict] = []
@@ -394,10 +407,97 @@ class MergeView(QWidget):
         self.loading_finished.emit()
 
     def _perform_merge(self) -> None:
-        """Perform 3-way merge and identify conflicts."""
+        """Perform semantic 3-way merge and identify conflicts."""
         if not self._base_doc or not self._ours_doc or not self._theirs_doc:
             return
 
+        self._conflicts = []
+        self._semantic_conflicts = []
+
+        # Try semantic merge first
+        try:
+            self._base_raw = UnityYAMLDocument.load(self._base_doc.file_path)
+            self._ours_raw = UnityYAMLDocument.load(self._ours_doc.file_path)
+            self._theirs_raw = UnityYAMLDocument.load(self._theirs_doc.file_path)
+
+            semantic_result = semantic_three_way_merge(
+                self._base_raw,
+                self._ours_raw,
+                self._theirs_raw
+            )
+
+            self._merged_raw = semantic_result.merged_document
+            self._semantic_conflicts = semantic_result.conflicts
+
+            # Convert semantic conflicts to UI MergeConflict objects
+            for conflict in semantic_result.conflicts:
+                go_name = conflict.game_object_name or ""
+                comp_type = conflict.class_name or ""
+                prop_path = conflict.property_path or ""
+                file_id = str(conflict.file_id) if conflict.file_id else ""
+
+                self._conflicts.append(MergeConflict(
+                    path=f"{go_name}.{comp_type}.{prop_path}",
+                    base_value=conflict.base_value,
+                    ours_value=conflict.ours_value,
+                    theirs_value=conflict.theirs_value,
+                    file_id=file_id,
+                ))
+
+            # Mark objects/components with conflicts in UI model
+            self._mark_conflicts_in_ui_model()
+
+        except Exception as e:
+            logger.warning(f"Semantic merge failed, falling back to basic merge: {e}")
+            self._perform_basic_merge()
+            return
+
+        # Create merge result
+        self._merge_result = MergeResult(
+            base=self._base_doc,
+            ours=self._ours_doc,
+            theirs=self._theirs_doc,
+            conflicts=self._conflicts,
+        )
+
+        self._update_conflict_label()
+
+    def _mark_conflicts_in_ui_model(self) -> None:
+        """Mark conflicting objects/components in UI model based on semantic conflicts."""
+        if not self._ours_doc or not self._theirs_doc:
+            return
+
+        ours_components = self._ours_doc.all_components
+        theirs_components = self._theirs_doc.all_components
+        ours_objects = {go.file_id: go for go in self._ours_doc.iter_all_objects()}
+        theirs_objects = {go.file_id: go for go in self._theirs_doc.iter_all_objects()}
+
+        for conflict in self._conflicts:
+            file_id = conflict.file_id if hasattr(conflict, 'file_id') else ""
+            if not file_id:
+                continue
+
+            # Mark components
+            if file_id in ours_components:
+                ours_components[file_id].diff_status = DiffStatus.MODIFIED
+            if file_id in theirs_components:
+                theirs_components[file_id].diff_status = DiffStatus.MODIFIED
+
+            # Find and mark owner GameObjects
+            for go in ours_objects.values():
+                for comp in go.components:
+                    if comp.file_id == file_id:
+                        go.diff_status = DiffStatus.MODIFIED
+                        break
+
+            for go in theirs_objects.values():
+                for comp in go.components:
+                    if comp.file_id == file_id:
+                        go.diff_status = DiffStatus.MODIFIED
+                        break
+
+    def _perform_basic_merge(self) -> None:
+        """Fallback to basic merge when semantic merge is not available."""
         self._conflicts = []
 
         # Build lookup maps
@@ -411,7 +511,6 @@ class MergeView(QWidget):
 
         # Find all file_ids
         all_object_ids = set(base_objects.keys()) | set(ours_objects.keys()) | set(theirs_objects.keys())
-        all_comp_ids = set(base_components.keys()) | set(ours_components.keys()) | set(theirs_components.keys())
 
         # Check object-level conflicts
         for file_id in all_object_ids:
@@ -419,35 +518,25 @@ class MergeView(QWidget):
             in_ours = file_id in ours_objects
             in_theirs = file_id in theirs_objects
 
-            # Conflict: both modified or one deleted while other modified
             if in_base and in_ours and in_theirs:
-                # All three have it - check for property conflicts
                 self._check_object_conflicts(
                     base_objects[file_id],
                     ours_objects[file_id],
                     theirs_objects[file_id],
                 )
-            elif in_base and not in_ours and not in_theirs:
-                # Both deleted - no conflict (auto-merge: delete)
-                pass
             elif in_base and in_ours and not in_theirs:
-                # Theirs deleted - check if ours modified
                 ours_objects[file_id].diff_status = DiffStatus.MODIFIED
             elif in_base and not in_ours and in_theirs:
-                # Ours deleted - check if theirs modified
                 theirs_objects[file_id].diff_status = DiffStatus.MODIFIED
             elif not in_base and in_ours and in_theirs:
-                # Both added with same fileID - conflict
                 self._conflicts.append(MergeConflict(
                     path=f"{ours_objects[file_id].get_path()} (both added)",
                     ours_value="added",
                     theirs_value="added",
                 ))
             elif not in_base and in_ours:
-                # Only ours added
                 ours_objects[file_id].diff_status = DiffStatus.ADDED
             elif not in_base and in_theirs:
-                # Only theirs added
                 theirs_objects[file_id].diff_status = DiffStatus.ADDED
 
         # Create merge result
@@ -714,7 +803,11 @@ class MergeView(QWidget):
             return False
 
         try:
-            # Use text-based merge with conflict resolutions
+            # Try semantic save first if we have semantic merge result
+            if self._merged_raw and self._semantic_conflicts:
+                return self._save_semantic_result(output)
+
+            # Fallback to text-based merge
             success, conflict_count = perform_text_merge(
                 base_path=self._base_path,
                 ours_path=self._ours_path,
@@ -728,16 +821,68 @@ class MergeView(QWidget):
                 self._unsaved_changes = False
                 return True
             else:
-                # Even with unresolved conflicts, write the file
-                # (conflicts will be marked with conflict markers)
                 self._unsaved_changes = False
                 return True
 
         except Exception as e:
-            print(f"Error saving merge result: {e}")
+            logger.error(f"Error saving merge result: {e}")
             import traceback
             traceback.print_exc()
             return False
+
+    def _save_semantic_result(self, output: Path) -> bool:
+        """Save using semantic merge with applied resolutions."""
+        if not self._merged_raw:
+            return False
+
+        try:
+            # Apply resolutions to semantic conflicts
+            for i, ui_conflict in enumerate(self._conflicts):
+                if not ui_conflict.is_resolved:
+                    continue
+
+                # Find matching semantic conflict
+                if i < len(self._semantic_conflicts):
+                    semantic_conflict = self._semantic_conflicts[i]
+
+                    # Determine resolution value
+                    if ui_conflict.resolution == ConflictResolution.USE_OURS:
+                        resolution = "ours"
+                    elif ui_conflict.resolution == ConflictResolution.USE_THEIRS:
+                        resolution = "theirs"
+                    elif ui_conflict.resolution == ConflictResolution.USE_MANUAL:
+                        # Use base for manual/custom resolution
+                        resolution = "base"
+                    else:
+                        continue
+
+                    # Apply resolution to merged document
+                    apply_resolution(self._merged_raw, semantic_conflict, resolution)
+
+            # Save the merged document
+            self._merged_raw.save(str(output))
+            self._unsaved_changes = False
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving semantic merge result: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to text-based merge
+            return self._save_text_result(output)
+
+    def _save_text_result(self, output: Path) -> bool:
+        """Fallback to text-based merge save."""
+        success, _ = perform_text_merge(
+            base_path=self._base_path,
+            ours_path=self._ours_path,
+            theirs_path=self._theirs_path,
+            output_path=output,
+            conflicts=self._conflicts,
+            normalize=True,
+        )
+        self._unsaved_changes = False
+        return True
 
     def _all_conflicts_resolved(self) -> bool:
         """Check if all conflicts have been resolved."""
