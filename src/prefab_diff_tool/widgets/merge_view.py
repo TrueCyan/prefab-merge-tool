@@ -30,6 +30,7 @@ from unityflow.semantic_merge import apply_resolution, semantic_three_way_merge
 
 from prefab_diff_tool.core.unity_model import (
     ConflictResolution,
+    ConflictType,
     DiffStatus,
     MergeConflict,
     MergeResult,
@@ -39,6 +40,11 @@ from prefab_diff_tool.core.unity_model import (
 )
 from prefab_diff_tool.core.writer import perform_text_merge
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
+from prefab_diff_tool.widgets.conflict_widgets import (
+    ConflictSummaryWidget,
+    PropertyConflictWidget,
+    StructuralConflictWidget,
+)
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
     FileLoadingWorker,
@@ -204,15 +210,24 @@ class MergeView(QWidget):
         hierarchy_layout.addWidget(tree_splitter)
         top_splitter.addWidget(hierarchy_container)
 
-        # Right side: Inspector panel
+        # Right side: Inspector panel with conflict resolution
         inspector_container = QWidget()
         inspector_layout = QVBoxLayout(inspector_container)
         inspector_layout.setContentsMargins(4, 4, 4, 4)
+        inspector_layout.setSpacing(4)
 
         inspector_label = QLabel("Inspector")
         inspector_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
         inspector_label.setFixedHeight(20)
         inspector_layout.addWidget(inspector_label)
+
+        # Conflict resolution section (shown when object has conflicts)
+        self._conflict_container = QWidget()
+        self._conflict_container_layout = QVBoxLayout(self._conflict_container)
+        self._conflict_container_layout.setContentsMargins(0, 0, 0, 8)
+        self._conflict_container_layout.setSpacing(4)
+        self._conflict_container.setVisible(False)
+        inspector_layout.addWidget(self._conflict_container)
 
         self._inspector = InspectorWidget()
         inspector_layout.addWidget(self._inspector)
@@ -376,6 +391,9 @@ class MergeView(QWidget):
             # Set document for Inspector (use ours as primary)
             self._inspector.set_document(self._ours_doc)
 
+            # Update conflict markers in trees
+            self._update_tree_conflict_markers()
+
             # Expand trees
             self._base_tree.expandAll()
             self._ours_tree.expandAll()
@@ -436,12 +454,32 @@ class MergeView(QWidget):
                 prop_path = conflict.property_path or ""
                 file_id = str(conflict.file_id) if conflict.file_id else ""
 
+                # Find owner GameObject file_id
+                object_file_id = ""
+                if file_id and self._ours_doc:
+                    owner = self._ours_doc.get_component_owner(file_id)
+                    if owner:
+                        object_file_id = owner.file_id
+                    elif self._base_doc:
+                        # Try base doc if not found in ours
+                        owner = self._base_doc.get_component_owner(file_id)
+                        if owner:
+                            object_file_id = owner.file_id
+                    elif self._theirs_doc:
+                        # Try theirs doc as fallback
+                        owner = self._theirs_doc.get_component_owner(file_id)
+                        if owner:
+                            object_file_id = owner.file_id
+
                 self._conflicts.append(MergeConflict(
                     path=f"{go_name}.{comp_type}.{prop_path}",
                     base_value=conflict.base_value,
                     ours_value=conflict.ours_value,
                     theirs_value=conflict.theirs_value,
                     file_id=file_id,
+                    object_file_id=object_file_id,
+                    component_type=comp_type,
+                    property_path=prop_path,
                 ))
 
             # Mark objects/components with conflicts in UI model
@@ -461,6 +499,23 @@ class MergeView(QWidget):
         )
 
         self._update_conflict_label()
+
+    def _update_tree_conflict_markers(self) -> None:
+        """Update conflict markers in all tree models based on unresolved conflicts."""
+        # Collect file_ids of objects with unresolved conflicts
+        conflict_file_ids: set[str] = set()
+        for conflict in self._conflicts:
+            if not conflict.is_resolved:
+                # Add both component file_id and owner object file_id
+                if conflict.file_id:
+                    conflict_file_ids.add(conflict.file_id)
+                if conflict.object_file_id:
+                    conflict_file_ids.add(conflict.object_file_id)
+
+        # Update all tree models
+        self._base_model.set_conflict_file_ids(conflict_file_ids)
+        self._ours_model.set_conflict_file_ids(conflict_file_ids)
+        self._theirs_model.set_conflict_file_ids(conflict_file_ids)
 
     def _mark_conflicts_in_ui_model(self) -> None:
         """Mark conflicting objects/components in UI model based on semantic conflicts."""
@@ -574,6 +629,7 @@ class MergeView(QWidget):
                     base_comp,
                     ours_comp,
                     theirs_comp,
+                    owner_file_id=ours_go.file_id,
                 )
 
     def _check_component_conflicts(
@@ -582,6 +638,7 @@ class MergeView(QWidget):
         base_comp: UnityComponent,
         ours_comp: UnityComponent,
         theirs_comp: UnityComponent,
+        owner_file_id: str = "",
     ) -> None:
         """Check for property-level conflicts in a component."""
         base_props = {p.path: p for p in base_comp.properties}
@@ -611,6 +668,10 @@ class MergeView(QWidget):
                     base_value=base_val,
                     ours_value=ours_val,
                     theirs_value=theirs_val,
+                    file_id=ours_comp.file_id,
+                    object_file_id=owner_file_id,
+                    component_type=comp_name,
+                    property_path=prop_path,
                 ))
 
                 # Mark as modified
@@ -716,6 +777,7 @@ class MergeView(QWidget):
 
             self._unsaved_changes = True
             self._update_conflict_label()
+            self._update_tree_conflict_markers()
             self.conflict_resolved.emit(self.get_unresolved_count())
 
     def _update_conflict_label(self) -> None:
@@ -782,6 +844,56 @@ class MergeView(QWidget):
                 if theirs_obj:
                     self._inspector.set_document(self._theirs_doc)
                     self._inspector.set_game_object(theirs_obj, None)
+
+            # Show conflicts for this object
+            self._show_conflicts_for_object(file_id)
+
+    def _show_conflicts_for_object(self, object_file_id: str) -> None:
+        """Show conflicts related to the selected object in the conflict container."""
+        # Clear existing conflict widgets
+        while self._conflict_container_layout.count():
+            item = self._conflict_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Find conflicts for this object
+        object_conflicts = []
+        for conflict in self._conflicts:
+            # Check if conflict belongs to this object
+            if conflict.object_file_id == object_file_id:
+                object_conflicts.append(conflict)
+            elif conflict.file_id:
+                # Check if conflict's component belongs to this object
+                if self._ours_doc:
+                    owner = self._ours_doc.get_component_owner(conflict.file_id)
+                    if owner and owner.file_id == object_file_id:
+                        object_conflicts.append(conflict)
+
+        if not object_conflicts:
+            self._conflict_container.setVisible(False)
+            return
+
+        # Show conflict widgets
+        self._conflict_container.setVisible(True)
+
+        for conflict in object_conflicts:
+            if conflict.is_structural:
+                widget = StructuralConflictWidget(conflict)
+            else:
+                widget = PropertyConflictWidget(conflict)
+
+            widget.resolution_changed.connect(self._on_conflict_resolution_changed)
+            self._conflict_container_layout.addWidget(widget)
+
+    def _on_conflict_resolution_changed(
+        self, conflict: MergeConflict, resolution: ConflictResolution
+    ) -> None:
+        """Handle conflict resolution from Inspector widgets."""
+        self._unsaved_changes = True
+        self._update_conflict_label()
+        self._update_conflict_table()
+        self._update_tree_conflict_markers()
+        self.conflict_resolved.emit(self.get_unresolved_count())
 
     def _on_conflict_row_clicked(self, row: int, col: int) -> None:
         """Handle conflict table row click."""
@@ -934,6 +1046,7 @@ class MergeView(QWidget):
 
         self._unsaved_changes = True
         self._update_conflict_label()
+        self._update_tree_conflict_markers()
         self.conflict_resolved.emit(0)
 
     def _on_accept_all_theirs(self) -> None:
@@ -948,6 +1061,7 @@ class MergeView(QWidget):
 
         self._unsaved_changes = True
         self._update_conflict_label()
+        self._update_tree_conflict_markers()
         self.conflict_resolved.emit(0)
 
     def expand_all(self) -> None:
