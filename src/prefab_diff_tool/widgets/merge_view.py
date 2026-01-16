@@ -39,7 +39,7 @@ from prefab_diff_tool.core.unity_model import (
     UnityGameObject,
 )
 from prefab_diff_tool.core.writer import perform_text_merge
-from prefab_diff_tool.models.tree_model import HierarchyTreeModel
+from prefab_diff_tool.models.tree_model import HierarchyTreeModel, align_hierarchy_models
 from prefab_diff_tool.widgets.conflict_widgets import (
     ConflictSummaryWidget,
     PropertyConflictWidget,
@@ -387,6 +387,10 @@ class MergeView(QWidget):
             self._base_model.set_document(self._base_doc)
             self._ours_model.set_document(self._ours_doc)
             self._theirs_model.set_document(self._theirs_doc)
+
+            # Align all three tree models to ensure proper visual alignment
+            # This inserts placeholders where one tree has items the others don't
+            align_hierarchy_models(self._base_model, self._ours_model, self._theirs_model)
 
             # Set document for Inspector (use ours as primary)
             self._inspector.set_document(self._ours_doc)

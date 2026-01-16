@@ -52,6 +52,7 @@ class NodeType(IntEnum):
     ROOT = 0
     GAME_OBJECT = 1
     COMPONENT = 2
+    PLACEHOLDER = 3  # Empty placeholder for alignment
 
 
 class TreeNode:
@@ -62,12 +63,17 @@ class TreeNode:
         data: Union[UnityGameObject, UnityComponent, None],
         node_type: NodeType,
         parent: Optional["TreeNode"] = None,
+        placeholder_file_id: str = "",
+        placeholder_name: str = "",
     ):
         self.data = data
         self.node_type = node_type
         self.parent = parent
         self.children: list["TreeNode"] = []
         self._row: int = 0
+        # For placeholder nodes: store the file_id and name of the missing object
+        self._placeholder_file_id = placeholder_file_id
+        self._placeholder_name = placeholder_name
 
     @property
     def row(self) -> int:
@@ -79,8 +85,15 @@ class TreeNode:
         self._row = value
 
     @property
+    def is_placeholder(self) -> bool:
+        """Check if this is a placeholder node."""
+        return self.node_type == NodeType.PLACEHOLDER
+
+    @property
     def name(self) -> str:
         """Get display name for this node."""
+        if self.node_type == NodeType.PLACEHOLDER:
+            return self._placeholder_name or ""
         if self.data is None:
             return "Root"
         if isinstance(self.data, UnityGameObject):
@@ -93,6 +106,8 @@ class TreeNode:
     @property
     def icon(self) -> str:
         """Get icon for this node."""
+        if self.node_type == NodeType.PLACEHOLDER:
+            return ""  # No icon for placeholder
         if self.data is None:
             return ""
         if isinstance(self.data, UnityGameObject):
@@ -125,6 +140,8 @@ class TreeNode:
     @property
     def file_id(self) -> str:
         """Get fileID of this node."""
+        if self.node_type == NodeType.PLACEHOLDER:
+            return self._placeholder_file_id
         if self.data is None:
             return ""
         return self.data.file_id
@@ -132,6 +149,8 @@ class TreeNode:
     @property
     def diff_status(self) -> DiffStatus:
         """Get diff status of this node."""
+        if self.node_type == NodeType.PLACEHOLDER:
+            return DiffStatus.UNCHANGED  # Placeholder has no diff status
         if self.data is None:
             return DiffStatus.UNCHANGED
         return self.data.diff_status
@@ -303,6 +322,10 @@ class HierarchyTreeModel(QAbstractItemModel):
         node = self._get_node(index)
 
         if role == Qt.ItemDataRole.DisplayRole:
+            # Placeholder nodes show just the name (dimmed, no icon)
+            if node.is_placeholder:
+                return f"    {node.name}"  # Indented to align with icon space
+
             # Include icon in display text for visual clarity
             icon = node.icon
             name = node.display_text
@@ -399,6 +422,10 @@ class HierarchyTreeModel(QAbstractItemModel):
 
     def _get_foreground(self, node: TreeNode) -> Optional[QBrush]:
         """Get foreground color based on diff status."""
+        # Placeholder nodes are dimmed
+        if node.is_placeholder:
+            return QBrush(QColor(100, 100, 100))  # Dimmed gray text
+
         status = node.diff_status
 
         if status == DiffStatus.ADDED:
@@ -416,6 +443,10 @@ class HierarchyTreeModel(QAbstractItemModel):
 
     def _get_background(self, node: TreeNode) -> Optional[QBrush]:
         """Get background color based on diff status and conflict state."""
+        # Placeholder nodes have a subtle gray background
+        if node.is_placeholder:
+            return QBrush(QColor(45, 45, 45, 80))  # Semi-transparent dark gray
+
         # Conflict state takes priority
         if node.file_id and node.file_id in self._conflict_file_ids:
             return QBrush(QColor(90, 45, 30))  # Orange-red for conflicts
@@ -474,3 +505,190 @@ class HierarchyTreeModel(QAbstractItemModel):
 
             child_index = self.index(i, 0, parent_index)
             self._collect_changed(child, child_index, indices)
+
+    def insert_placeholder(
+        self,
+        parent_node: TreeNode,
+        position: int,
+        file_id: str,
+        name: str,
+    ) -> TreeNode:
+        """Insert a placeholder node at the specified position."""
+        placeholder = TreeNode(
+            data=None,
+            node_type=NodeType.PLACEHOLDER,
+            parent=parent_node,
+            placeholder_file_id=file_id,
+            placeholder_name=name,
+        )
+        placeholder.row = position
+        parent_node.children.insert(position, placeholder)
+
+        # Update row indices for nodes after the insertion
+        for i in range(position + 1, len(parent_node.children)):
+            parent_node.children[i]._row = i
+
+        # Cache the placeholder index
+        placeholder_index = self.createIndex(position, 0, placeholder)
+        if file_id:
+            self._index_cache[file_id] = placeholder_index
+
+        return placeholder
+
+    def get_child_file_ids(self, parent_node: Optional[TreeNode] = None) -> list[str]:
+        """Get list of file_ids for children of the given parent node."""
+        if parent_node is None:
+            parent_node = self._root
+        return [child.file_id for child in parent_node.children if child.file_id]
+
+    def find_node_by_file_id(self, file_id: str, parent_node: Optional[TreeNode] = None) -> Optional[TreeNode]:
+        """Find a node by its file_id within the children of parent_node."""
+        if parent_node is None:
+            parent_node = self._root
+        for child in parent_node.children:
+            if child.file_id == file_id:
+                return child
+        return None
+
+
+def align_hierarchy_models(*models: HierarchyTreeModel) -> None:
+    """
+    Align multiple hierarchy tree models by inserting placeholders.
+
+    This ensures all models have the same number of items at each level,
+    with placeholders inserted where an object exists in one model but not others.
+    This allows synchronized scrolling to keep corresponding items aligned.
+
+    Args:
+        *models: Variable number of HierarchyTreeModel instances to align
+    """
+    if len(models) < 2:
+        return
+
+    # Begin model reset for all models
+    for model in models:
+        model.beginResetModel()
+
+    try:
+        # Align root level nodes
+        _align_node_children([model._root for model in models], models)
+    finally:
+        # End model reset for all models
+        for model in models:
+            model._index_cache.clear()
+            _rebuild_index_cache(model, model._root, QModelIndex())
+            model.endResetModel()
+
+
+def _align_node_children(parent_nodes: list[Optional[TreeNode]], models: tuple[HierarchyTreeModel, ...]) -> None:
+    """
+    Recursively align children of corresponding parent nodes across models.
+
+    Args:
+        parent_nodes: List of parent TreeNodes (or None for placeholders), one from each model
+        models: The corresponding HierarchyTreeModel instances
+    """
+    # Filter out None nodes and get valid parent nodes
+    valid_parents = [p for p in parent_nodes if p is not None and not p.is_placeholder]
+
+    if not valid_parents:
+        return
+
+    # Collect all unique file_ids from all models, preserving order
+    all_file_ids: list[str] = []
+    file_id_to_name: dict[str, str] = {}
+    seen_file_ids: set[str] = set()
+
+    # Build merged order by interleaving items from all models
+    max_children = max((len(parent.children) for parent in valid_parents), default=0)
+
+    if max_children == 0:
+        return
+
+    for i in range(max_children):
+        for parent in valid_parents:
+            if i < len(parent.children):
+                child = parent.children[i]
+                if child.file_id and child.file_id not in seen_file_ids:
+                    all_file_ids.append(child.file_id)
+                    seen_file_ids.add(child.file_id)
+                    file_id_to_name[child.file_id] = child.name
+
+    if not all_file_ids:
+        return
+
+    # Now insert placeholders to align all models
+    for idx, parent in enumerate(parent_nodes):
+        # Skip None parents (should not happen at root level, but handle it)
+        if parent is None:
+            continue
+
+        # For placeholder parents, we don't add children
+        if parent.is_placeholder:
+            continue
+
+        existing_file_ids = {child.file_id for child in parent.children}
+        position = 0
+
+        for file_id in all_file_ids:
+            if file_id in existing_file_ids:
+                # Find the actual node and move it to correct position if needed
+                current_pos = None
+                for i, child in enumerate(parent.children):
+                    if child.file_id == file_id:
+                        current_pos = i
+                        break
+
+                if current_pos is not None and current_pos != position:
+                    # Move the node to the correct position
+                    node = parent.children.pop(current_pos)
+                    parent.children.insert(position, node)
+
+                position += 1
+            else:
+                # Insert placeholder
+                name = file_id_to_name.get(file_id, "")
+                placeholder = TreeNode(
+                    data=None,
+                    node_type=NodeType.PLACEHOLDER,
+                    parent=parent,
+                    placeholder_file_id=file_id,
+                    placeholder_name=name,
+                )
+                parent.children.insert(position, placeholder)
+                position += 1
+
+        # Update row indices
+        for i, child in enumerate(parent.children):
+            child._row = i
+
+    # Recursively align children
+    for file_id in all_file_ids:
+        child_nodes: list[Optional[TreeNode]] = []
+        for parent in parent_nodes:
+            child_node = None
+            if parent is not None and not parent.is_placeholder:
+                for child in parent.children:
+                    if child.file_id == file_id:
+                        child_node = child
+                        break
+            child_nodes.append(child_node)
+
+        # Only recurse if at least one non-placeholder node has children
+        has_children = any(
+            node is not None and not node.is_placeholder and len(node.children) > 0
+            for node in child_nodes
+        )
+
+        if has_children:
+            # Recursively align children
+            _align_node_children(child_nodes, models)
+
+
+def _rebuild_index_cache(model: HierarchyTreeModel, parent_node: TreeNode, parent_index: QModelIndex) -> None:
+    """Rebuild the index cache after alignment."""
+    for i, child in enumerate(parent_node.children):
+        child_index = model.createIndex(i, 0, child)
+        if child.file_id:
+            model._index_cache[child.file_id] = child_index
+        _rebuild_index_cache(model, child, child_index)

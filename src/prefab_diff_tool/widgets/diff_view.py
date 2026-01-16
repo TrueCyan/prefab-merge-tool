@@ -34,7 +34,7 @@ from prefab_diff_tool.core.unity_model import (
     UnityDocument,
     UnityGameObject,
 )
-from prefab_diff_tool.models.tree_model import HierarchyTreeModel
+from prefab_diff_tool.models.tree_model import HierarchyTreeModel, align_hierarchy_models
 from prefab_diff_tool.utils.guid_resolver import GuidResolver
 from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
@@ -253,6 +253,10 @@ class DiffView(QWidget):
             # Update UI
             self._left_model.set_document(self._left_doc)
             self._right_model.set_document(self._right_doc)
+
+            # Align the two tree models to ensure proper visual alignment
+            # This inserts placeholders where one tree has items the other doesn't
+            align_hierarchy_models(self._left_model, self._right_model)
 
             # Set document for Inspector to resolve internal references
             self._inspector.set_document(self._right_doc)
