@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from unityflow import UnityYAMLDocument
+from unityflow.semantic_diff import semantic_diff, ChangeType
+
 from prefab_diff_tool.core.unity_model import (
     Change,
     DiffResult,
@@ -281,20 +284,87 @@ class DiffView(QWidget):
         self.loading_finished.emit()
 
     def _perform_diff(self) -> None:
-        """Perform diff between left and right documents."""
+        """Perform semantic diff between left and right documents."""
         if not self._left_doc or not self._right_doc:
             return
 
         self._changes = []
         summary = DiffSummary()
 
+        # Load raw UnityYAMLDocument for semantic diff
+        try:
+            left_raw = UnityYAMLDocument.load(self._left_doc.file_path)
+            right_raw = UnityYAMLDocument.load(self._right_doc.file_path)
+            semantic_result = semantic_diff(left_raw, right_raw)
+        except Exception as e:
+            logger.warning(f"Semantic diff failed, falling back to basic diff: {e}")
+            self._perform_basic_diff()
+            return
+
+        # Build lookup maps for UI model
         left_objects = {go.file_id: go for go in self._left_doc.iter_all_objects()}
         right_objects = {go.file_id: go for go in self._right_doc.iter_all_objects()}
-
         left_components = self._left_doc.all_components
         right_components = self._right_doc.all_components
 
-        # Find added objects (in right but not in left)
+        # Track which objects/components have been modified
+        modified_objects: set[str] = set()
+        modified_components: set[str] = set()
+
+        # Process semantic diff property changes
+        for change in semantic_result.property_changes:
+            # Map ChangeType to DiffStatus
+            if change.change_type == ChangeType.ADDED:
+                status = DiffStatus.ADDED
+                summary.modified_properties += 1
+            elif change.change_type == ChangeType.REMOVED:
+                status = DiffStatus.REMOVED
+                summary.modified_properties += 1
+            else:  # MODIFIED
+                status = DiffStatus.MODIFIED
+                summary.modified_properties += 1
+
+            # Create change record using correct attribute names
+            component_type = change.class_name or ""
+            go_name = change.game_object_name or ""
+            file_id = str(change.file_id) if change.file_id else ""
+
+            self._changes.append(Change(
+                path=f"{go_name}.{component_type}.{change.property_path}",
+                status=status,
+                left_value=change.old_value,
+                right_value=change.new_value,
+                object_id=file_id,
+                component_type=component_type,
+            ))
+
+            # Mark component as modified
+            if file_id:
+                modified_components.add(file_id)
+                if file_id in right_components:
+                    right_components[file_id].diff_status = DiffStatus.MODIFIED
+                if file_id in left_components:
+                    left_components[file_id].diff_status = DiffStatus.MODIFIED
+
+        # Update object diff status based on component changes
+        for comp_id in modified_components:
+            # Find owner GameObject and mark it
+            for go in right_objects.values():
+                for comp in go.components:
+                    if comp.file_id == comp_id:
+                        if go.file_id not in modified_objects:
+                            go.diff_status = DiffStatus.MODIFIED
+                            modified_objects.add(go.file_id)
+                            summary.modified_objects += 1
+                        break
+
+            for go in left_objects.values():
+                for comp in go.components:
+                    if comp.file_id == comp_id:
+                        go.diff_status = DiffStatus.MODIFIED
+                        break
+
+        # Check for added/removed objects (not covered by property changes)
         for file_id, go in right_objects.items():
             if file_id not in left_objects:
                 go.diff_status = DiffStatus.ADDED
@@ -306,7 +376,6 @@ class DiffView(QWidget):
                     object_id=file_id,
                 ))
 
-        # Find removed objects (in left but not in right)
         for file_id, go in left_objects.items():
             if file_id not in right_objects:
                 go.diff_status = DiffStatus.REMOVED
@@ -318,19 +387,71 @@ class DiffView(QWidget):
                     object_id=file_id,
                 ))
 
-        # Find added components
+        # Check for added/removed components
         for file_id, comp in right_components.items():
             if file_id not in left_components:
                 comp.diff_status = DiffStatus.ADDED
                 summary.added_components += 1
 
-        # Find removed components
         for file_id, comp in left_components.items():
             if file_id not in right_components:
                 comp.diff_status = DiffStatus.REMOVED
                 summary.removed_components += 1
 
-        # Compare existing objects and their properties
+        self._diff_result = DiffResult(
+            left=self._left_doc,
+            right=self._right_doc,
+            changes=self._changes,
+            summary=summary,
+        )
+
+    def _perform_basic_diff(self) -> None:
+        """Fallback to basic diff when semantic diff is not available."""
+        self._changes = []
+        summary = DiffSummary()
+
+        left_objects = {go.file_id: go for go in self._left_doc.iter_all_objects()}
+        right_objects = {go.file_id: go for go in self._right_doc.iter_all_objects()}
+
+        left_components = self._left_doc.all_components
+        right_components = self._right_doc.all_components
+
+        # Find added objects
+        for file_id, go in right_objects.items():
+            if file_id not in left_objects:
+                go.diff_status = DiffStatus.ADDED
+                summary.added_objects += 1
+                self._changes.append(Change(
+                    path=go.get_path(),
+                    status=DiffStatus.ADDED,
+                    right_value=go.name,
+                    object_id=file_id,
+                ))
+
+        # Find removed objects
+        for file_id, go in left_objects.items():
+            if file_id not in right_objects:
+                go.diff_status = DiffStatus.REMOVED
+                summary.removed_objects += 1
+                self._changes.append(Change(
+                    path=go.get_path(),
+                    status=DiffStatus.REMOVED,
+                    left_value=go.name,
+                    object_id=file_id,
+                ))
+
+        # Find added/removed components
+        for file_id, comp in right_components.items():
+            if file_id not in left_components:
+                comp.diff_status = DiffStatus.ADDED
+                summary.added_components += 1
+
+        for file_id, comp in left_components.items():
+            if file_id not in right_components:
+                comp.diff_status = DiffStatus.REMOVED
+                summary.removed_components += 1
+
+        # Compare existing objects
         for file_id in left_objects.keys() & right_objects.keys():
             left_go = left_objects[file_id]
             right_go = right_objects[file_id]

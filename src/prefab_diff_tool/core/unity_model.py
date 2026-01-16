@@ -236,22 +236,57 @@ class ConflictResolution(Enum):
     UNRESOLVED = "unresolved"
     USE_OURS = "ours"
     USE_THEIRS = "theirs"
+    USE_BASE = "base"
     USE_MANUAL = "manual"
+
+
+class ConflictType(Enum):
+    """Type of merge conflict."""
+    PROPERTY = "property"  # Same property modified differently
+    OBJECT_DELETED_MODIFIED = "object_deleted_modified"  # One deleted, other modified
+    OBJECT_DELETED_CHILDREN = "object_deleted_children"  # One deleted, other added children
+    OBJECT_BOTH_ADDED = "object_both_added"  # Both added same object
+    COMPONENT_DELETED_MODIFIED = "component_deleted_modified"  # Component deleted vs modified
 
 
 @dataclass
 class MergeConflict:
     """A single merge conflict."""
     path: str
+    conflict_type: ConflictType = ConflictType.PROPERTY
     base_value: Optional[Any] = None
     ours_value: Optional[Any] = None
     theirs_value: Optional[Any] = None
     resolution: ConflictResolution = ConflictResolution.UNRESOLVED
     resolved_value: Optional[Any] = None
-    
+    file_id: Optional[str] = None  # Component/object file_id for semantic tracking
+    object_file_id: Optional[str] = None  # Owner GameObject file_id
+    component_type: Optional[str] = None  # Component class name
+    property_path: Optional[str] = None  # Property path within component
+
     @property
     def is_resolved(self) -> bool:
         return self.resolution != ConflictResolution.UNRESOLVED
+
+    @property
+    def is_structural(self) -> bool:
+        """Returns True if this is a structural (hierarchy-level) conflict."""
+        return self.conflict_type != ConflictType.PROPERTY
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable conflict description."""
+        if self.conflict_type == ConflictType.PROPERTY:
+            return self.property_path or self.path
+        elif self.conflict_type == ConflictType.OBJECT_DELETED_MODIFIED:
+            return "오브젝트 삭제 vs 수정"
+        elif self.conflict_type == ConflictType.OBJECT_DELETED_CHILDREN:
+            return "오브젝트 삭제 vs 자식 추가"
+        elif self.conflict_type == ConflictType.OBJECT_BOTH_ADDED:
+            return "양쪽에서 동일 오브젝트 추가"
+        elif self.conflict_type == ConflictType.COMPONENT_DELETED_MODIFIED:
+            return "컴포넌트 삭제 vs 수정"
+        return self.path
 
 
 @dataclass

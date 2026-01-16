@@ -2,6 +2,7 @@
 3-way merge view widget.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -24,8 +25,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from unityflow import UnityYAMLDocument
+from unityflow.semantic_merge import apply_resolution, semantic_three_way_merge
+
 from prefab_diff_tool.core.unity_model import (
     ConflictResolution,
+    ConflictType,
     DiffStatus,
     MergeConflict,
     MergeResult,
@@ -35,10 +40,18 @@ from prefab_diff_tool.core.unity_model import (
 )
 from prefab_diff_tool.core.writer import perform_text_merge
 from prefab_diff_tool.models.tree_model import HierarchyTreeModel
+from prefab_diff_tool.widgets.conflict_widgets import (
+    ConflictSummaryWidget,
+    PropertyConflictWidget,
+    StructuralConflictWidget,
+)
+from prefab_diff_tool.widgets.inspector_widget import InspectorWidget
 from prefab_diff_tool.widgets.loading_widget import (
     FileLoadingWorker,
     LoadingProgressWidget,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MergeView(QWidget):
@@ -70,6 +83,13 @@ class MergeView(QWidget):
         self._ours_doc: Optional[UnityDocument] = None
         self._theirs_doc: Optional[UnityDocument] = None
 
+        # Raw UnityYAMLDocument for semantic merge
+        self._base_raw: Optional[UnityYAMLDocument] = None
+        self._ours_raw: Optional[UnityYAMLDocument] = None
+        self._theirs_raw: Optional[UnityYAMLDocument] = None
+        self._merged_raw: Optional[UnityYAMLDocument] = None
+        self._semantic_conflicts: list = []  # unityflow PropertyConflict objects
+
         self._merge_result: Optional[MergeResult] = None
         self._conflicts: list[MergeConflict] = []
         self._current_conflict_index: int = -1
@@ -87,7 +107,7 @@ class MergeView(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Setup the UI layout."""
+        """Setup the UI layout - same structure as DiffView with Inspector."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -105,38 +125,121 @@ class MergeView(QWidget):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Main vertical splitter
+        # Main vertical splitter (top: hierarchy+inspector, bottom: conflicts)
         main_splitter = QSplitter()
         main_splitter.setOrientation(Qt.Orientation.Vertical)
         content_layout.addWidget(main_splitter)
 
-        # Top: 3-way comparison
-        top_widget = QWidget()
-        top_layout = QHBoxLayout(top_widget)
-        top_layout.setContentsMargins(4, 4, 4, 4)
-        top_layout.setSpacing(4)
+        # Top section: Horizontal splitter (hierarchy | inspector)
+        top_splitter = QSplitter()
+        top_splitter.setOrientation(Qt.Orientation.Horizontal)
 
-        # BASE panel
-        self._base_panel, self._base_tree = self._create_panel("BASE (공통 조상)")
+        # Left side: Hierarchy section with 3 trees
+        hierarchy_container = QWidget()
+        hierarchy_layout = QVBoxLayout(hierarchy_container)
+        hierarchy_layout.setContentsMargins(4, 4, 4, 4)
+
+        hierarchy_label = QLabel("Hierarchy")
+        hierarchy_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        hierarchy_label.setFixedHeight(20)
+        hierarchy_layout.addWidget(hierarchy_label)
+
+        # Three-way tree splitter (BASE | OURS | THEIRS)
+        tree_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # BASE tree
+        base_tree_container = QWidget()
+        base_tree_layout = QVBoxLayout(base_tree_container)
+        base_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._base_label = QLabel("BASE (공통 조상)")
+        self._base_label.setStyleSheet("color: #888; font-size: 11px;")
+        base_tree_layout.addWidget(self._base_label)
+
+        self._base_tree = QTreeView()
+        self._base_tree.setHeaderHidden(True)
         self._base_tree.setModel(self._base_model)
+        self._base_tree.setIndentation(16)
         self._base_tree.clicked.connect(self._on_base_tree_clicked)
-        top_layout.addWidget(self._base_panel)
+        base_tree_layout.addWidget(self._base_tree)
 
-        # OURS panel
-        self._ours_panel, self._ours_tree = self._create_panel("OURS (내 변경)")
+        tree_splitter.addWidget(base_tree_container)
+
+        # OURS tree
+        ours_tree_container = QWidget()
+        ours_tree_layout = QVBoxLayout(ours_tree_container)
+        ours_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._ours_label = QLabel("OURS (내 변경)")
+        self._ours_label.setStyleSheet("color: #888; font-size: 11px;")
+        ours_tree_layout.addWidget(self._ours_label)
+
+        self._ours_tree = QTreeView()
+        self._ours_tree.setHeaderHidden(True)
         self._ours_tree.setModel(self._ours_model)
+        self._ours_tree.setIndentation(16)
         self._ours_tree.clicked.connect(self._on_ours_tree_clicked)
-        top_layout.addWidget(self._ours_panel)
+        ours_tree_layout.addWidget(self._ours_tree)
 
-        # THEIRS panel
-        self._theirs_panel, self._theirs_tree = self._create_panel("THEIRS (상대 변경)")
+        tree_splitter.addWidget(ours_tree_container)
+
+        # THEIRS tree
+        theirs_tree_container = QWidget()
+        theirs_tree_layout = QVBoxLayout(theirs_tree_container)
+        theirs_tree_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._theirs_label = QLabel("THEIRS (상대 변경)")
+        self._theirs_label.setStyleSheet("color: #888; font-size: 11px;")
+        theirs_tree_layout.addWidget(self._theirs_label)
+
+        self._theirs_tree = QTreeView()
+        self._theirs_tree.setHeaderHidden(True)
         self._theirs_tree.setModel(self._theirs_model)
+        self._theirs_tree.setIndentation(16)
         self._theirs_tree.clicked.connect(self._on_theirs_tree_clicked)
-        top_layout.addWidget(self._theirs_panel)
+        theirs_tree_layout.addWidget(self._theirs_tree)
 
-        main_splitter.addWidget(top_widget)
+        tree_splitter.addWidget(theirs_tree_container)
 
-        # Bottom: Result and conflict resolution
+        # Synchronize scrolling between all three trees
+        self._sync_scroll_enabled = True
+        self._base_tree.verticalScrollBar().valueChanged.connect(self._on_base_scroll)
+        self._ours_tree.verticalScrollBar().valueChanged.connect(self._on_ours_scroll)
+        self._theirs_tree.verticalScrollBar().valueChanged.connect(self._on_theirs_scroll)
+
+        hierarchy_layout.addWidget(tree_splitter)
+        top_splitter.addWidget(hierarchy_container)
+
+        # Right side: Inspector panel with conflict resolution
+        inspector_container = QWidget()
+        inspector_layout = QVBoxLayout(inspector_container)
+        inspector_layout.setContentsMargins(4, 4, 4, 4)
+        inspector_layout.setSpacing(4)
+
+        inspector_label = QLabel("Inspector")
+        inspector_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888; padding: 2px 0;")
+        inspector_label.setFixedHeight(20)
+        inspector_layout.addWidget(inspector_label)
+
+        # Conflict resolution section (shown when object has conflicts)
+        self._conflict_container = QWidget()
+        self._conflict_container_layout = QVBoxLayout(self._conflict_container)
+        self._conflict_container_layout.setContentsMargins(0, 0, 0, 8)
+        self._conflict_container_layout.setSpacing(4)
+        self._conflict_container.setVisible(False)
+        inspector_layout.addWidget(self._conflict_container)
+
+        self._inspector = InspectorWidget()
+        inspector_layout.addWidget(self._inspector)
+
+        top_splitter.addWidget(inspector_container)
+
+        # Set initial splitter sizes (50% hierarchy, 50% inspector)
+        top_splitter.setSizes([500, 500])
+
+        main_splitter.addWidget(top_splitter)
+
+        # Bottom: Conflict resolution section
         bottom_widget = QWidget()
         bottom_layout = QVBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(4, 4, 4, 4)
@@ -195,8 +298,8 @@ class MergeView(QWidget):
 
         main_splitter.addWidget(bottom_widget)
 
-        # Set initial sizes (60% top, 40% bottom)
-        main_splitter.setSizes([600, 400])
+        # Set initial sizes (70% top, 30% bottom)
+        main_splitter.setSizes([700, 300])
 
         # Add content widget to stack
         self._stack.addWidget(content_widget)
@@ -204,23 +307,29 @@ class MergeView(QWidget):
         # Show content by default
         self._stack.setCurrentIndex(1)
 
-    def _create_panel(self, title: str) -> tuple[QFrame, QTreeView]:
-        """Create a panel for BASE/OURS/THEIRS."""
-        frame = QFrame()
-        frame.setFrameStyle(QFrame.Shape.StyledPanel)
+    def _on_base_scroll(self, value: int) -> None:
+        """Sync other trees when base tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._ours_tree.verticalScrollBar().setValue(value)
+            self._theirs_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(4, 4, 4, 4)
+    def _on_ours_scroll(self, value: int) -> None:
+        """Sync other trees when ours tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._base_tree.verticalScrollBar().setValue(value)
+            self._theirs_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
-        label = QLabel(title)
-        label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(label)
-
-        tree = QTreeView()
-        tree.setHeaderHidden(True)
-        layout.addWidget(tree)
-
-        return frame, tree
+    def _on_theirs_scroll(self, value: int) -> None:
+        """Sync other trees when theirs tree scrolls."""
+        if self._sync_scroll_enabled:
+            self._sync_scroll_enabled = False
+            self._base_tree.verticalScrollBar().setValue(value)
+            self._ours_tree.verticalScrollBar().setValue(value)
+            self._sync_scroll_enabled = True
 
     def load_merge(self, base: Path, ours: Path, theirs: Path) -> None:
         """Load files for 3-way merge asynchronously."""
@@ -279,6 +388,12 @@ class MergeView(QWidget):
             self._ours_model.set_document(self._ours_doc)
             self._theirs_model.set_document(self._theirs_doc)
 
+            # Set document for Inspector (use ours as primary)
+            self._inspector.set_document(self._ours_doc)
+
+            # Update conflict markers in trees
+            self._update_tree_conflict_markers()
+
             # Expand trees
             self._base_tree.expandAll()
             self._ours_tree.expandAll()
@@ -310,10 +425,134 @@ class MergeView(QWidget):
         self.loading_finished.emit()
 
     def _perform_merge(self) -> None:
-        """Perform 3-way merge and identify conflicts."""
+        """Perform semantic 3-way merge and identify conflicts."""
         if not self._base_doc or not self._ours_doc or not self._theirs_doc:
             return
 
+        self._conflicts = []
+        self._semantic_conflicts = []
+
+        # Try semantic merge first
+        try:
+            self._base_raw = UnityYAMLDocument.load(self._base_doc.file_path)
+            self._ours_raw = UnityYAMLDocument.load(self._ours_doc.file_path)
+            self._theirs_raw = UnityYAMLDocument.load(self._theirs_doc.file_path)
+
+            semantic_result = semantic_three_way_merge(
+                self._base_raw,
+                self._ours_raw,
+                self._theirs_raw
+            )
+
+            self._merged_raw = semantic_result.merged_document
+            self._semantic_conflicts = semantic_result.conflicts
+
+            # Convert semantic conflicts to UI MergeConflict objects
+            for conflict in semantic_result.conflicts:
+                go_name = conflict.game_object_name or ""
+                comp_type = conflict.class_name or ""
+                prop_path = conflict.property_path or ""
+                file_id = str(conflict.file_id) if conflict.file_id else ""
+
+                # Find owner GameObject file_id
+                object_file_id = ""
+                if file_id and self._ours_doc:
+                    owner = self._ours_doc.get_component_owner(file_id)
+                    if owner:
+                        object_file_id = owner.file_id
+                    elif self._base_doc:
+                        # Try base doc if not found in ours
+                        owner = self._base_doc.get_component_owner(file_id)
+                        if owner:
+                            object_file_id = owner.file_id
+                    elif self._theirs_doc:
+                        # Try theirs doc as fallback
+                        owner = self._theirs_doc.get_component_owner(file_id)
+                        if owner:
+                            object_file_id = owner.file_id
+
+                self._conflicts.append(MergeConflict(
+                    path=f"{go_name}.{comp_type}.{prop_path}",
+                    base_value=conflict.base_value,
+                    ours_value=conflict.ours_value,
+                    theirs_value=conflict.theirs_value,
+                    file_id=file_id,
+                    object_file_id=object_file_id,
+                    component_type=comp_type,
+                    property_path=prop_path,
+                ))
+
+            # Mark objects/components with conflicts in UI model
+            self._mark_conflicts_in_ui_model()
+
+        except Exception as e:
+            logger.warning(f"Semantic merge failed, falling back to basic merge: {e}")
+            self._perform_basic_merge()
+            return
+
+        # Create merge result
+        self._merge_result = MergeResult(
+            base=self._base_doc,
+            ours=self._ours_doc,
+            theirs=self._theirs_doc,
+            conflicts=self._conflicts,
+        )
+
+        self._update_conflict_label()
+
+    def _update_tree_conflict_markers(self) -> None:
+        """Update conflict markers in all tree models based on unresolved conflicts."""
+        # Collect file_ids of objects with unresolved conflicts
+        conflict_file_ids: set[str] = set()
+        for conflict in self._conflicts:
+            if not conflict.is_resolved:
+                # Add both component file_id and owner object file_id
+                if conflict.file_id:
+                    conflict_file_ids.add(conflict.file_id)
+                if conflict.object_file_id:
+                    conflict_file_ids.add(conflict.object_file_id)
+
+        # Update all tree models
+        self._base_model.set_conflict_file_ids(conflict_file_ids)
+        self._ours_model.set_conflict_file_ids(conflict_file_ids)
+        self._theirs_model.set_conflict_file_ids(conflict_file_ids)
+
+    def _mark_conflicts_in_ui_model(self) -> None:
+        """Mark conflicting objects/components in UI model based on semantic conflicts."""
+        if not self._ours_doc or not self._theirs_doc:
+            return
+
+        ours_components = self._ours_doc.all_components
+        theirs_components = self._theirs_doc.all_components
+        ours_objects = {go.file_id: go for go in self._ours_doc.iter_all_objects()}
+        theirs_objects = {go.file_id: go for go in self._theirs_doc.iter_all_objects()}
+
+        for conflict in self._conflicts:
+            file_id = conflict.file_id if hasattr(conflict, 'file_id') else ""
+            if not file_id:
+                continue
+
+            # Mark components
+            if file_id in ours_components:
+                ours_components[file_id].diff_status = DiffStatus.MODIFIED
+            if file_id in theirs_components:
+                theirs_components[file_id].diff_status = DiffStatus.MODIFIED
+
+            # Find and mark owner GameObjects
+            for go in ours_objects.values():
+                for comp in go.components:
+                    if comp.file_id == file_id:
+                        go.diff_status = DiffStatus.MODIFIED
+                        break
+
+            for go in theirs_objects.values():
+                for comp in go.components:
+                    if comp.file_id == file_id:
+                        go.diff_status = DiffStatus.MODIFIED
+                        break
+
+    def _perform_basic_merge(self) -> None:
+        """Fallback to basic merge when semantic merge is not available."""
         self._conflicts = []
 
         # Build lookup maps
@@ -327,7 +566,6 @@ class MergeView(QWidget):
 
         # Find all file_ids
         all_object_ids = set(base_objects.keys()) | set(ours_objects.keys()) | set(theirs_objects.keys())
-        all_comp_ids = set(base_components.keys()) | set(ours_components.keys()) | set(theirs_components.keys())
 
         # Check object-level conflicts
         for file_id in all_object_ids:
@@ -335,35 +573,25 @@ class MergeView(QWidget):
             in_ours = file_id in ours_objects
             in_theirs = file_id in theirs_objects
 
-            # Conflict: both modified or one deleted while other modified
             if in_base and in_ours and in_theirs:
-                # All three have it - check for property conflicts
                 self._check_object_conflicts(
                     base_objects[file_id],
                     ours_objects[file_id],
                     theirs_objects[file_id],
                 )
-            elif in_base and not in_ours and not in_theirs:
-                # Both deleted - no conflict (auto-merge: delete)
-                pass
             elif in_base and in_ours and not in_theirs:
-                # Theirs deleted - check if ours modified
                 ours_objects[file_id].diff_status = DiffStatus.MODIFIED
             elif in_base and not in_ours and in_theirs:
-                # Ours deleted - check if theirs modified
                 theirs_objects[file_id].diff_status = DiffStatus.MODIFIED
             elif not in_base and in_ours and in_theirs:
-                # Both added with same fileID - conflict
                 self._conflicts.append(MergeConflict(
                     path=f"{ours_objects[file_id].get_path()} (both added)",
                     ours_value="added",
                     theirs_value="added",
                 ))
             elif not in_base and in_ours:
-                # Only ours added
                 ours_objects[file_id].diff_status = DiffStatus.ADDED
             elif not in_base and in_theirs:
-                # Only theirs added
                 theirs_objects[file_id].diff_status = DiffStatus.ADDED
 
         # Create merge result
@@ -401,6 +629,7 @@ class MergeView(QWidget):
                     base_comp,
                     ours_comp,
                     theirs_comp,
+                    owner_file_id=ours_go.file_id,
                 )
 
     def _check_component_conflicts(
@@ -409,6 +638,7 @@ class MergeView(QWidget):
         base_comp: UnityComponent,
         ours_comp: UnityComponent,
         theirs_comp: UnityComponent,
+        owner_file_id: str = "",
     ) -> None:
         """Check for property-level conflicts in a component."""
         base_props = {p.path: p for p in base_comp.properties}
@@ -438,6 +668,10 @@ class MergeView(QWidget):
                     base_value=base_val,
                     ours_value=ours_val,
                     theirs_value=theirs_val,
+                    file_id=ours_comp.file_id,
+                    object_file_id=owner_file_id,
+                    component_type=comp_name,
+                    property_path=prop_path,
                 ))
 
                 # Mark as modified
@@ -543,6 +777,7 @@ class MergeView(QWidget):
 
             self._unsaved_changes = True
             self._update_conflict_label()
+            self._update_tree_conflict_markers()
             self.conflict_resolved.emit(self.get_unresolved_count())
 
     def _update_conflict_label(self) -> None:
@@ -564,7 +799,7 @@ class MergeView(QWidget):
         self._sync_tree_selection(index, "theirs")
 
     def _sync_tree_selection(self, index, source: str) -> None:
-        """Sync selection across all three trees."""
+        """Sync selection across all three trees and update Inspector."""
         data = index.data(Qt.ItemDataRole.UserRole)
         if not data or not hasattr(data, "file_id"):
             return
@@ -590,6 +825,76 @@ class MergeView(QWidget):
                 self._theirs_tree.setCurrentIndex(idx)
                 self._theirs_tree.scrollTo(idx)
 
+        # Update Inspector with the selected object
+        # Show OURS version as main, with BASE for comparison
+        if isinstance(data, UnityGameObject):
+            ours_obj = self._ours_doc.get_object(file_id) if self._ours_doc else None
+            base_obj = self._base_doc.get_object(file_id) if self._base_doc else None
+
+            if ours_obj:
+                self._inspector.set_document(self._ours_doc)
+                self._inspector.set_game_object(ours_obj, base_obj)
+            elif base_obj:
+                # Object only exists in base (deleted in ours)
+                self._inspector.set_document(self._base_doc)
+                self._inspector.set_game_object(base_obj, None)
+            else:
+                # Check theirs
+                theirs_obj = self._theirs_doc.get_object(file_id) if self._theirs_doc else None
+                if theirs_obj:
+                    self._inspector.set_document(self._theirs_doc)
+                    self._inspector.set_game_object(theirs_obj, None)
+
+            # Show conflicts for this object
+            self._show_conflicts_for_object(file_id)
+
+    def _show_conflicts_for_object(self, object_file_id: str) -> None:
+        """Show conflicts related to the selected object in the conflict container."""
+        # Clear existing conflict widgets
+        while self._conflict_container_layout.count():
+            item = self._conflict_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Find conflicts for this object
+        object_conflicts = []
+        for conflict in self._conflicts:
+            # Check if conflict belongs to this object
+            if conflict.object_file_id == object_file_id:
+                object_conflicts.append(conflict)
+            elif conflict.file_id:
+                # Check if conflict's component belongs to this object
+                if self._ours_doc:
+                    owner = self._ours_doc.get_component_owner(conflict.file_id)
+                    if owner and owner.file_id == object_file_id:
+                        object_conflicts.append(conflict)
+
+        if not object_conflicts:
+            self._conflict_container.setVisible(False)
+            return
+
+        # Show conflict widgets
+        self._conflict_container.setVisible(True)
+
+        for conflict in object_conflicts:
+            if conflict.is_structural:
+                widget = StructuralConflictWidget(conflict)
+            else:
+                widget = PropertyConflictWidget(conflict)
+
+            widget.resolution_changed.connect(self._on_conflict_resolution_changed)
+            self._conflict_container_layout.addWidget(widget)
+
+    def _on_conflict_resolution_changed(
+        self, conflict: MergeConflict, resolution: ConflictResolution
+    ) -> None:
+        """Handle conflict resolution from Inspector widgets."""
+        self._unsaved_changes = True
+        self._update_conflict_label()
+        self._update_conflict_table()
+        self._update_tree_conflict_markers()
+        self.conflict_resolved.emit(self.get_unresolved_count())
+
     def _on_conflict_row_clicked(self, row: int, col: int) -> None:
         """Handle conflict table row click."""
         self._current_conflict_index = row
@@ -610,7 +915,11 @@ class MergeView(QWidget):
             return False
 
         try:
-            # Use text-based merge with conflict resolutions
+            # Try semantic save first if we have semantic merge result
+            if self._merged_raw and self._semantic_conflicts:
+                return self._save_semantic_result(output)
+
+            # Fallback to text-based merge
             success, conflict_count = perform_text_merge(
                 base_path=self._base_path,
                 ours_path=self._ours_path,
@@ -624,16 +933,68 @@ class MergeView(QWidget):
                 self._unsaved_changes = False
                 return True
             else:
-                # Even with unresolved conflicts, write the file
-                # (conflicts will be marked with conflict markers)
                 self._unsaved_changes = False
                 return True
 
         except Exception as e:
-            print(f"Error saving merge result: {e}")
+            logger.error(f"Error saving merge result: {e}")
             import traceback
             traceback.print_exc()
             return False
+
+    def _save_semantic_result(self, output: Path) -> bool:
+        """Save using semantic merge with applied resolutions."""
+        if not self._merged_raw:
+            return False
+
+        try:
+            # Apply resolutions to semantic conflicts
+            for i, ui_conflict in enumerate(self._conflicts):
+                if not ui_conflict.is_resolved:
+                    continue
+
+                # Find matching semantic conflict
+                if i < len(self._semantic_conflicts):
+                    semantic_conflict = self._semantic_conflicts[i]
+
+                    # Determine resolution value
+                    if ui_conflict.resolution == ConflictResolution.USE_OURS:
+                        resolution = "ours"
+                    elif ui_conflict.resolution == ConflictResolution.USE_THEIRS:
+                        resolution = "theirs"
+                    elif ui_conflict.resolution == ConflictResolution.USE_MANUAL:
+                        # Use base for manual/custom resolution
+                        resolution = "base"
+                    else:
+                        continue
+
+                    # Apply resolution to merged document
+                    apply_resolution(self._merged_raw, semantic_conflict, resolution)
+
+            # Save the merged document
+            self._merged_raw.save(str(output))
+            self._unsaved_changes = False
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving semantic merge result: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to text-based merge
+            return self._save_text_result(output)
+
+    def _save_text_result(self, output: Path) -> bool:
+        """Fallback to text-based merge save."""
+        success, _ = perform_text_merge(
+            base_path=self._base_path,
+            ours_path=self._ours_path,
+            theirs_path=self._theirs_path,
+            output_path=output,
+            conflicts=self._conflicts,
+            normalize=True,
+        )
+        self._unsaved_changes = False
+        return True
 
     def _all_conflicts_resolved(self) -> bool:
         """Check if all conflicts have been resolved."""
@@ -685,6 +1046,7 @@ class MergeView(QWidget):
 
         self._unsaved_changes = True
         self._update_conflict_label()
+        self._update_tree_conflict_markers()
         self.conflict_resolved.emit(0)
 
     def _on_accept_all_theirs(self) -> None:
@@ -699,6 +1061,7 @@ class MergeView(QWidget):
 
         self._unsaved_changes = True
         self._update_conflict_label()
+        self._update_tree_conflict_markers()
         self.conflict_resolved.emit(0)
 
     def expand_all(self) -> None:

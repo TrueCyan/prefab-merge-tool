@@ -158,6 +158,8 @@ class HierarchyTreeModel(QAbstractItemModel):
         self._show_components = False  # Unity Hierarchy style: GameObjects only
         # Cache for O(1) file_id -> QModelIndex lookup
         self._index_cache: dict[str, QModelIndex] = {}
+        # Set of file_ids that have unresolved conflicts
+        self._conflict_file_ids: set[str] = {}
 
     def set_document(self, document: Optional[UnityDocument]) -> None:
         """Set the Unity document to display."""
@@ -181,6 +183,26 @@ class HierarchyTreeModel(QAbstractItemModel):
                 self._root = TreeNode(None, NodeType.ROOT)
                 self._build_tree(self._document.root_objects, self._root, QModelIndex())
             self.endResetModel()
+
+    def set_conflict_file_ids(self, file_ids: set[str]) -> None:
+        """Set the file_ids that have unresolved conflicts.
+
+        Args:
+            file_ids: Set of object/component file_ids with unresolved conflicts
+        """
+        old_ids = self._conflict_file_ids
+        self._conflict_file_ids = file_ids
+
+        # Notify view of changed items for both old and new conflict items
+        all_changed = old_ids | file_ids
+        for file_id in all_changed:
+            idx = self._index_cache.get(file_id)
+            if idx is not None and idx.isValid():
+                self.dataChanged.emit(idx, idx)
+
+    def has_conflict(self, file_id: str) -> bool:
+        """Check if a file_id has unresolved conflicts."""
+        return file_id in self._conflict_file_ids
 
     def _build_tree(
         self,
@@ -284,9 +306,13 @@ class HierarchyTreeModel(QAbstractItemModel):
             # Include icon in display text for visual clarity
             icon = node.icon
             name = node.display_text
+            # Add conflict indicator if this node has unresolved conflicts
+            conflict_indicator = ""
+            if node.file_id and node.file_id in self._conflict_file_ids:
+                conflict_indicator = "⚠️ "
             if icon:
-                return f"{icon} {name}"
-            return name
+                return f"{conflict_indicator}{icon} {name}"
+            return f"{conflict_indicator}{name}"
 
         elif role == Qt.ItemDataRole.ToolTipRole:
             return self._get_tooltip(node)
@@ -389,7 +415,11 @@ class HierarchyTreeModel(QAbstractItemModel):
         return None
 
     def _get_background(self, node: TreeNode) -> Optional[QBrush]:
-        """Get background color based on diff status."""
+        """Get background color based on diff status and conflict state."""
+        # Conflict state takes priority
+        if node.file_id and node.file_id in self._conflict_file_ids:
+            return QBrush(QColor(90, 45, 30))  # Orange-red for conflicts
+
         status = node.diff_status
 
         if status == DiffStatus.ADDED:
